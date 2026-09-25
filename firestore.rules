@@ -1,0 +1,82 @@
+rules_version = '2';
+
+// Owner-only access. This is the real security boundary: the app's own email check is only UX.
+// Replace YOUR_EMAIL_HERE with your email (lowercase, exactly as you sign in), then publish:
+//   Firebase console → Firestore Database → Rules → paste → Publish
+//   (or from a PC: firebase deploy --only firestore:rules)
+// Keep your email out of the public repo: edit it in the console, not in this file.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(uid) {
+      return request.auth != null
+        && request.auth.uid == uid
+        && request.auth.token.email == "YOUR_EMAIL_HERE"
+        && request.auth.token.email_verified == true;
+    }
+
+    function isDate(v) {
+      return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function optEmoji(d) {
+      return !('emoji' in d) || (d.emoji is string && d.emoji.size() > 0 && d.emoji.size() <= 64);
+    }
+
+    // Mirrors normalizeMovie() in js/storage.js. Document id = movie id:
+    //   "603" (TMDB movie) · "tv-19885" (TMDB TV show) · "m-xxxxxxxx" (added by hand)
+    function isValidMovie(movieId) {
+      let d = request.resource.data;
+      let type = d.get('mediaType', 'movie');
+      return d.keys().hasOnly(['tmdbId', 'mediaType', 'title', 'posterPath', 'customPosterUrl', 'emoji',
+                               'inWatchlist', 'addedDate', 'watchLog', 'genres', 'releaseYear', 'runtime'])
+        && d.keys().hasAll(['title', 'posterPath', 'customPosterUrl', 'inWatchlist', 'addedDate', 'watchLog'])
+        && ((type == 'movie' && d.tmdbId is int && d.tmdbId > 0 && movieId == string(d.tmdbId))
+            || (type == 'tv' && d.tmdbId is int && d.tmdbId > 0 && movieId == 'tv-' + string(d.tmdbId))
+            || (type == 'custom' && !('tmdbId' in d) && movieId.matches('^m-[a-z0-9]{6,20}$')))
+        && d.title is string && d.title.size() > 0 && d.title.size() <= 300
+        && (d.posterPath == null
+            || (d.posterPath is string && d.posterPath.matches('^/[A-Za-z0-9_.-]{1,200}$')))
+        && (d.customPosterUrl == null
+            || (d.customPosterUrl is string && d.customPosterUrl.size() <= 2048 && d.customPosterUrl.matches('^https://.+')))
+        && optEmoji(d)
+        && d.inWatchlist is bool
+        && isDate(d.addedDate)
+        // Rules can't loop over list items; entry shapes are enforced client-side and the
+        // list length is capped here. Firestore's 1 MiB document limit also applies.
+        && d.watchLog is list && d.watchLog.size() <= 1000
+        && (!('genres' in d) || d.genres == null || (d.genres is list && d.genres.size() <= 12))
+        && (!('releaseYear' in d) || d.releaseYear == null
+            || (d.releaseYear is int && d.releaseYear >= 1870 && d.releaseYear <= 2100))
+        && (!('runtime' in d) || d.runtime == null
+            || (d.runtime is int && d.runtime >= 0 && d.runtime <= 1000));
+    }
+
+    // Mirrors normalizeList() in js/storage.js. Items are movie ids, in order.
+    function isValidList(listId) {
+      let d = request.resource.data;
+      return listId.matches('^l-[a-z0-9]{6,20}$')
+        && d.keys().hasOnly(['name', 'emoji', 'description', 'ranked', 'items', 'createdDate'])
+        && d.keys().hasAll(['name', 'description', 'ranked', 'items', 'createdDate'])
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 80
+        && optEmoji(d)
+        && d.description is string && d.description.size() <= 300
+        && d.ranked is bool
+        && d.items is list && d.items.size() <= 500
+        && isDate(d.createdDate);
+    }
+
+    match /users/{uid}/movies/{movieId} {
+      allow read, delete: if isOwner(uid);
+      allow create, update: if isOwner(uid) && isValidMovie(movieId);
+    }
+
+    match /users/{uid}/lists/{listId} {
+      allow read, delete: if isOwner(uid);
+      allow create, update: if isOwner(uid) && isValidList(listId);
+    }
+
+    // Everything else is denied by default (no other match blocks).
+  }
+}

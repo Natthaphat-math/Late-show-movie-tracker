@@ -5,13 +5,16 @@
 // watched ones to the app for an optional one-by-one detail pass.
 
 import { searchMoviesOnce } from "./search.js";
-import { h, icon, posterSlot, ratingInput, toast } from "./ui.js";
+import { newId } from "./storage.js";
+import { h, icon, posterSlot, ratingInput, toast, kindBadge } from "./ui.js";
 
 const MAX_LINES = 100;
 const CONCURRENCY = 4;
 const ACTIONS = [["watchlist", "Watchlist"], ["watched", "Watched"], ["skip", "Skip"]];
 
-let app = null;       // { getMovie(id), apply(items) → summary, startReview(list) }
+let app = null;       // { getMovie(id), getLists(), apply(items, { listId, newListName }) → summary, startReview(list) }
+let listChoice = "";  // "" (none), a list id, or "__new"
+let newListName = "";
 let rows = [];
 let draft = "";
 let uid = 0;
@@ -127,7 +130,7 @@ async function lookup(row) {
     row.state = "error";
     row.error = err.message;
   }
-  const lib = row.state === "found" ? app.getMovie(current(row).tmdbId) : null;
+  const lib = row.state === "found" ? app.getMovie(current(row).id) : null;
   row.action = row.state !== "found" ? "skip" : lib ? "skip" : row.action === "skip" ? "watchlist" : row.action;
 }
 
@@ -138,12 +141,23 @@ function bestMatch(title, results) {
   return i >= 0 ? i : 0;
 }
 
-const current = (row) => row.results[row.pick];
+// A row is addable once it has a TMDB match or was turned into a hand-made entry.
+const pickable = (row) => row.state === "found" || row.state === "custom";
+const current = (row) => (row.state === "custom" ? row.custom : row.results[row.pick]);
+
+function makeCustom(row) {
+  row.custom = {
+    id: newId("m"), mediaType: "custom", tmdbId: null, title: row.title.slice(0, 300),
+    year: row.year || "", posterPath: null, emoji: "🎬",
+  };
+  row.state = "custom";
+  row.action = "watchlist";
+}
 
 // ---------------------------------------------------------------- step 2: review
 
 function renderReview() {
-  const found = rows.filter((r) => r.state === "found").length;
+  const found = rows.filter(pickable).length;
   const attention = rows.length - found;
 
   const setAll = h("div", { class: "batch-setall" },
@@ -152,8 +166,8 @@ function renderReview() {
       type: "button", class: "btn btn-xs btn-ghost", text: label,
       onclick: () => {
         for (const r of rows) {
-          if (r.state !== "found") continue;
-          if (value === "watchlist" && app.getMovie(current(r).tmdbId)) continue; // already in library: leave as is
+          if (!pickable(r)) continue;
+          if (value === "watchlist" && app.getMovie(current(r).id)) continue; // already in library: leave as is
           r.action = value;
           redrawRow(r);
         }
@@ -162,6 +176,19 @@ function renderReview() {
     })));
 
   const list = h("ol", { class: "batch-list" }, rows.map(rowEl));
+
+  // Optional: drop everything that gets added into one list as well.
+  const lists = app.getLists();
+  const nameInput = h("input", { type: "text", maxlength: 80, placeholder: "New list name", value: newListName, "aria-label": "New list name", hidden: listChoice !== "__new" });
+  nameInput.addEventListener("input", () => { newListName = nameInput.value; });
+  const select = h("select", { "aria-label": "Also add to list" },
+    h("option", { value: "", text: "No list" }),
+    lists.map((l) => h("option", { value: l.id, text: `${l.emoji ? l.emoji + " " : ""}${l.name}` })),
+    h("option", { value: "__new", text: "+ New list…" }));
+  if (listChoice && listChoice !== "__new" && !lists.some((l) => l.id === listChoice)) listChoice = "";
+  select.value = listChoice;
+  select.addEventListener("change", () => { listChoice = select.value; nameInput.hidden = listChoice !== "__new"; if (!nameInput.hidden) nameInput.focus(); });
+  const listPick = h("div", { class: "batch-listpick" }, h("span", { class: "micro", text: "Also add to list" }), select, nameInput);
   const footer = h("div", { class: "batch-footer" },
     h("p", { class: "batch-summary", id: "batch-summary" }),
     h("div", { class: "modal-actions" },
@@ -174,6 +201,7 @@ function renderReview() {
     h("h2", { id: "batch-title", text: `${found} match${found === 1 ? "" : "es"}` }),
     h("p", { class: "modal-sub", text: attention ? `${attention} line${attention === 1 ? "" : "s"} need${attention === 1 ? "s" : ""} attention — edit and search again, or leave skipped.` : "Check each match, choose where it goes, then add them all." }),
     setAll,
+    listPick,
     list,
     footer);
   updateFooter();
@@ -183,7 +211,7 @@ function rowEl(row) {
   const li = h("li", { class: `batch-row is-${row.state}`, dataset: { action: row.action } });
   row.el = li;
 
-  if (row.state !== "found") {
+  if (!pickable(row)) {
     const input = h("input", { type: "search", value: row.line, maxlength: 200, "aria-label": `Search again for ${row.line}` });
     const retry = async () => {
       const line = input.value.trim();
@@ -199,28 +227,36 @@ function rowEl(row) {
       h("div", { class: "batch-thumb" }, posterSlot(null)),
       h("div", { class: "batch-info" },
         h("span", { class: "batch-none", text: row.state === "error" ? `Search failed: ${row.error}` : `No match for “${row.line}”` }),
-        h("div", { class: "batch-retry" }, input, h("button", { type: "button", class: "btn btn-xs", text: "Search", onclick: retry }))));
+        h("div", { class: "batch-retry" }, input, h("button", { type: "button", class: "btn btn-xs", text: "Search", onclick: retry })),
+        h("button", { type: "button", class: "link batch-change", text: "Not on TMDB? Add it as your own entry", onclick: () => { makeCustom(row); redrawRow(row); updateFooter(); } })));
     return li;
   }
 
   const m = current(row);
-  const owned = app.getMovie(m.tmdbId);
+  const owned = app.getMovie(m.id);
+  const isCustom = row.state === "custom";
   const seg = h("div", { class: "segmented batch-seg", role: "radiogroup", "aria-label": `Where to add ${m.title}` },
     ACTIONS.map(([value, label]) => h("button", {
       type: "button", role: "radio", class: "seg-btn", "aria-checked": String(row.action === value), text: label,
       onclick: () => { row.action = value; redrawRow(row); updateFooter(); },
     })));
 
+  const emojiInput = isCustom ? h("input", { type: "text", class: "batch-emoji", value: m.emoji || "", maxlength: 8, "aria-label": `Emoji poster for ${m.title}`, title: "Emoji poster" }) : null;
+  emojiInput?.addEventListener("change", () => { row.custom.emoji = emojiInput.value.trim() || null; redrawRow(row); });
+
   const info = h("div", { class: "batch-info" },
     h("h3", { class: "batch-title", text: m.title }),
-    h("span", { class: "micro", text: [m.year || "Year n/a", owned ? "In library" : null].filter(Boolean).join(" · ") }),
-    row.title.toLowerCase() !== m.title.toLowerCase() ? h("span", { class: "batch-from", text: `from “${row.line}”` }) : null,
-    row.results.length > 1
+    h("span", { class: "micro", text: [isCustom ? "Your own entry" : m.mediaType === "tv" ? "TV" : null, m.year || (isCustom ? null : "Year n/a"), owned ? "In library" : null].filter(Boolean).join(" · ") }),
+    !isCustom && row.title.toLowerCase() !== m.title.toLowerCase() ? h("span", { class: "batch-from", text: `from “${row.line}”` }) : null,
+    isCustom ? h("label", { class: "batch-emoji-row" }, h("span", { class: "micro", text: "Emoji" }), emojiInput) : null,
+    isCustom
+      ? h("button", { type: "button", class: "link batch-change", text: "Undo — search again instead", onclick: () => { row.state = "none"; row.action = "skip"; redrawRow(row); updateFooter(); } })
+      : row.results.length > 1
       ? h("button", { type: "button", class: "link batch-change", "aria-expanded": String(row.open), text: row.open ? "Hide other matches" : `Not this one? ${row.results.length - 1} other match${row.results.length === 2 ? "" : "es"}`, onclick: () => { row.open = !row.open; redrawRow(row); } })
       : null);
 
   li.append(
-    h("div", { class: "batch-thumb" }, posterSlot(m.posterPath ? `https://image.tmdb.org/t/p/w92${m.posterPath}` : null)),
+    h("div", { class: "batch-thumb" }, posterSlot(m.posterPath ? `https://image.tmdb.org/t/p/w92${m.posterPath}` : null, { emoji: m.emoji }), kindBadge(m.mediaType) || ""),
     info,
     h("div", { class: "batch-controls" },
       seg,
@@ -233,7 +269,7 @@ function rowEl(row) {
     li.append(h("ul", { class: "batch-alts" }, row.results.map((r, i) => i === row.pick ? null : h("li", {},
       h("button", {
         type: "button", class: "batch-alt",
-        onclick: () => { row.pick = i; row.open = false; if (app.getMovie(r.tmdbId) && row.action === "watchlist") row.action = "skip"; redrawRow(row); updateFooter(); },
+        onclick: () => { row.pick = i; row.open = false; if (app.getMovie(r.id) && row.action === "watchlist") row.action = "skip"; redrawRow(row); updateFooter(); },
       },
         h("span", { class: "batch-alt-thumb" }, posterSlot(r.posterPath ? `https://image.tmdb.org/t/p/w92${r.posterPath}` : null)),
         h("span", { class: "batch-alt-title", text: r.title }),
@@ -250,8 +286,8 @@ function chosen() {
   // Two lines can resolve to the same film; keep the first choice.
   const seen = new Set();
   return rows.filter((r) => {
-    if (r.state !== "found" || r.action === "skip") return false;
-    const id = current(r).tmdbId;
+    if (!pickable(r) || r.action === "skip") return false;
+    const id = current(r).id;
     if (seen.has(id)) return false;
     seen.add(id);
     return true;
@@ -281,15 +317,18 @@ async function applyRows() {
   btn.disabled = true;
   btn.textContent = "Adding…";
   const items = list.map((r) => ({ ...current(r), action: r.action, rating: r.action === "watched" ? r.rating : null }));
-  const result = await app.apply(items);
+  const target = listChoice === "__new" ? { newListName: newListName.trim() } : listChoice ? { listId: listChoice } : {};
+  const result = await app.apply(items, target);
+  listChoice = ""; newListName = "";
   renderDone(result);
 }
 
-function renderDone({ added, updated, failed, review }) {
+function renderDone({ added, updated, failed, review, listName }) {
   draft = "";
   const parts = [`${added} added`];
   if (updated) parts.push(`${updated} updated`);
   if (failed) parts.push(`${failed} failed`);
+  if (listName) parts.push(`all in “${listName}”`);
   body().replaceChildren(
     h("span", { class: "micro", text: "Batch add · done" }),
     h("h2", { id: "batch-title", text: "Library updated" }),

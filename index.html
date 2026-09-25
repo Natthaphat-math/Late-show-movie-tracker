@@ -46,6 +46,9 @@
     <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 20h16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M4 20h16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/></symbol>
+    <symbol id="i-tape" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="8.5" cy="12" r="2.2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="15.5" cy="12" r="2.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10.7 12h2.6" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-chev-up" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chev-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-film" viewBox="0 0 48 48"><rect x="8" y="4" width="32" height="40" rx="4" fill="none" stroke="currentColor" stroke-width="3.5"/><path d="M16 4v40M32 4v40" stroke="currentColor" stroke-width="3.5"/><path d="M8 14h8M8 24h8M8 34h8M32 14h8M32 24h8M32 34h8" stroke="currentColor" stroke-width="3.5"/></symbol>
   </svg>
 
@@ -95,6 +98,9 @@
     <button type="button" class="rail-btn" data-view="watched">
       <svg aria-hidden="true"><use href="#i-eye"/></svg><span>Watched</span><span class="count" data-count="watched">0</span>
     </button>
+    <button type="button" class="rail-btn" data-view="lists">
+      <svg aria-hidden="true"><use href="#i-tape"/></svg><span>Lists</span>
+    </button>
     <button type="button" class="rail-btn" data-view="stats">
       <svg aria-hidden="true"><use href="#i-tv"/></svg><span>Stats</span>
     </button>
@@ -141,6 +147,9 @@
           <label class="field-label" for="poster-url">Image URL (https)</label>
           <input id="poster-url" type="url" inputmode="url" placeholder="https://…/poster.jpg" maxlength="2048" spellcheck="false">
           <p class="hint" id="poster-hint">Paste a direct link to an image. Only the URL is stored.</p>
+          <label class="field-label" for="poster-emoji">Emoji</label>
+          <input id="poster-emoji" type="text" maxlength="16" class="emoji-input" placeholder="🎬" autocomplete="off">
+          <p class="hint">Shown when there's no poster, or if the image can't load.</p>
         </div>
       </div>
       <div class="modal-actions">
@@ -184,6 +193,11 @@
   <!-- Batch add (content rendered by js/batch.js) -->
   <dialog class="modal panel batch" id="batch-dialog" aria-labelledby="batch-title">
     <div class="modal-body" id="batch-body"></div>
+  </dialog>
+
+  <!-- Small forms: lists, list picker, add-it-yourself (content rendered by js/sheets.js) -->
+  <dialog class="modal panel" id="sheet-dialog" aria-label="Form">
+    <div class="modal-body" id="sheet-body"></div>
   </dialog>
 
   <!-- Generic confirm / choice -->

@@ -57,22 +57,24 @@ This means the API key's **API restrictions** don't include Identity Toolkit. Op
 → Credentials → **API restrictions** and tick **Identity Toolkit API** and **Token Service API**, plus
 **Cloud Firestore API**, then Save. Changes can take up to 5 minutes to apply.
 
-## 5. Security rules (deploy from your PC)
+## 5. Security rules
 
-The committed `firestore.rules` keeps the `YOUR_EMAIL_HERE` placeholder so your email stays out of
-the public repo. To deploy the real rules:
+`firestore.rules` in this repo is the current rule set, with the `YOUR_EMAIL_HERE` placeholder so your
+email stays out of the public repo.
+
+**Easiest (browser):** Firebase console → **Firestore Database → Rules** tab → select all → paste the
+contents of `firestore.rules` → replace `YOUR_EMAIL_HERE` with your email → **Publish**. The editor
+checks the syntax and refuses to publish if something's wrong; the previous version stays live.
+
+**Or from a PC** with the Firebase CLI:
 
 ```bash
-# one time: tell git to ignore your local edits to this file
-git update-index --skip-worktree firestore.rules
-
-# put your email in firestore.rules locally, then:
-firebase login
-firebase use --add                      # pick your project
-firebase deploy --only firestore:rules  # rules only; Pages does the hosting
+git update-index --skip-worktree firestore.rules   # one time: keep your local email edit out of git
+# put your email in firestore.rules, then:
+firebase deploy --only firestore:rules
 ```
 
-Use `--only firestore:rules`. A plain `firebase deploy` would also publish a copy of the site to Firebase Hosting.
+Whenever an app update needs new rules, this file changes and the release notes say so.
 
 ## Local development
 

@@ -45,9 +45,13 @@ export function icon(name, cls = "") {
  * A poster "slotted into the device". If the URL is missing or fails to load,
  * a flat placeholder icon shows instead of a broken image.
  */
-export function posterSlot(url, { alt = "", cls = "", lazy = true } = {}) {
+export function posterSlot(url, { alt = "", cls = "", lazy = true, emoji = null } = {}) {
   const slot = h("div", { class: `poster-slot ${cls}`.trim() });
-  const fallback = h("div", { class: "poster-fallback", "aria-hidden": "true" }, icon("film"));
+  // Behind the image: the entry's emoji if it has one, else a flat film icon. Either shows
+  // when there's no URL or the image fails to load.
+  const fallback = emoji
+    ? h("div", { class: "poster-fallback poster-emoji", "aria-hidden": "true" }, h("span", { text: emoji }))
+    : h("div", { class: "poster-fallback", "aria-hidden": "true" }, icon("film"));
   slot.append(fallback);
   setSlotImage(slot, url, alt, lazy);
   return slot;
@@ -70,7 +74,9 @@ export function statusLeds(movie) {
   const n = movie.watchLog.length;
   const wrap = h("div", { class: "status" });
   const leds = h("span", { class: "leds", "aria-hidden": "true" });
-  if (n === 0) {
+  if (n === 0 && !movie.inWatchlist) {
+    wrap.append(h("span", { class: "micro status-text", text: "Saved" }));
+  } else if (n === 0) {
     leds.append(h("span", { class: "led led-hollow" }));
     wrap.append(leds, h("span", { class: "micro status-text", text: "On watchlist" }));
   } else {
@@ -118,11 +124,20 @@ export function ratingInput(name, initial = null, onChange = null) {
 
 // ---------- cards ----------
 
-export function libraryCard(movie) {
-  const card = h("article", { class: "card", dataset: { id: movie.tmdbId } });
-  const open = h("button", { type: "button", class: "card-open", dataset: { action: "open", id: movie.tmdbId }, "aria-label": `Open ${movie.title}` });
+/** Small "TV" / "Own" tag on the poster corner for anything that isn't a TMDB movie. */
+export function kindBadge(mediaType) {
+  if (mediaType === "tv") return h("span", { class: "kind-badge", text: "TV" });
+  if (mediaType === "custom") return h("span", { class: "kind-badge kind-own", text: "Own", title: "Added by hand" });
+  return null;
+}
+
+export function libraryCard(movie, { rank = null } = {}) {
+  const card = h("article", { class: "card", dataset: { id: movie.id } });
+  const open = h("button", { type: "button", class: "card-open", dataset: { action: "open", id: movie.id }, "aria-label": `Open ${movie.title}` });
   card.append(
-    posterSlot(posterUrl(movie), { alt: "" }),
+    posterSlot(posterUrl(movie), { alt: "", emoji: movie.emoji }),
+    kindBadge(movie.mediaType) || "",
+    rank ? h("span", { class: "rank-badge mono", text: String(rank) }) : "",
     h("div", { class: "card-meta" }, h("h3", { class: "card-title", text: movie.title }), statusLeds(movie)),
     open,
   );
@@ -134,14 +149,15 @@ export function searchCard(result, libMovie) {
   const actions = h("div", { class: "card-actions" });
   if (!libMovie) {
     actions.append(
-      h("button", { type: "button", class: "btn btn-xs btn-hero", dataset: { action: "add-watchlist", id: result.tmdbId } }, icon("plus"), "Watchlist"),
-      h("button", { type: "button", class: "btn btn-xs", dataset: { action: "log-new", id: result.tmdbId } }, icon("eye"), "Watched"),
+      h("button", { type: "button", class: "btn btn-xs btn-hero", dataset: { action: "add-watchlist", id: result.id } }, icon("plus"), "Watchlist"),
+      h("button", { type: "button", class: "btn btn-xs", dataset: { action: "log-new", id: result.id } }, icon("eye"), "Watched"),
     );
   } else {
-    actions.append(h("button", { type: "button", class: "btn btn-xs", dataset: { action: "open", id: result.tmdbId } }, "In library · open"));
+    actions.append(h("button", { type: "button", class: "btn btn-xs", dataset: { action: "open", id: result.id } }, "In library · open"));
   }
   card.append(
     posterSlot(result.posterPath ? `https://image.tmdb.org/t/p/w342${result.posterPath}` : null, { alt: "" }),
+    kindBadge(result.mediaType) || "",
     h("div", { class: "card-meta" },
       h("h3", { class: "card-title", text: result.title }),
       h("span", { class: "micro", text: result.year || "Year n/a" }),

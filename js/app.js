@@ -3,7 +3,10 @@
 import {
   localStorageAdapter, createFirestoreAdapter, normalizeMovie, posterUrl, todayISO,
   isValidDate, httpsUrlOrNull, buildExport, parseImport, applyImport, localLibraryCount, hasMeta,
+  newId, normalizeList, cleanEmoji,
 } from "./storage.js";
+import { listShelf, listDetail } from "./lists.js";
+import { listForm, listPicker, customForm } from "./sheets.js";
 import { initSearch, searchMovies, isAbort, fetchMovieMeta } from "./search.js";
 import { tasteProfile, genreName } from "./stats.js";
 import {
@@ -31,6 +34,8 @@ const state = {
   review: null, // { queue: [{ id, rating }], i } — one-by-one detail pass after batch add
   editing: null, // { id, idx } — watch entry being edited in the drawer
   genre: null,   // TMDB genre id filtering the Watched grid (set from the Stats page)
+  lists: [],     // custom lists, in creation order
+  listId: null,  // list open in the Lists view (null = the shelf)
   busy: false,
 };
 
@@ -50,7 +55,7 @@ async function boot() {
     $("#q").placeholder = "Add a TMDB token in js/config.js to search";
   }
   wireEvents();
-  initBatch({ getMovie: (id) => state.movies.get(id), apply: applyBatch, startReview });
+  initBatch({ getMovie: (id) => state.movies.get(id), getLists: () => state.lists, apply: applyBatch, startReview });
   await useAdapter(localStorageAdapter);
 
   if (ownerModeAvailable()) {
@@ -84,6 +89,10 @@ function withSyncTracking(adapter) {
     addMovie: (m) => track(adapter.addMovie(m)),
     updateMovie: (m) => track(adapter.updateMovie(m)),
     removeMovie: (id) => track(adapter.removeMovie(id)),
+    getLists: () => adapter.getLists(),
+    saveList: (l) => track(adapter.saveList(l)),
+    removeList: (id) => track(adapter.removeList(id)),
+    get listsBlocked() { return adapter.listsBlocked; },
   };
 }
 
@@ -100,7 +109,9 @@ async function useAdapter(adapter) {
   adapter = withSyncTracking(adapter);
   state.adapter = adapter;
   const list = await adapter.getMovies();
-  state.movies = new Map(list.map((m) => [m.tmdbId, m]));
+  state.movies = new Map(list.map((m) => [m.id, m]));
+  state.lists = await adapter.getLists().catch((err) => { console.warn("Couldn't load lists", err); return []; });
+  if (state.listId && !state.lists.some((l) => l.id === state.listId)) state.listId = null;
   $("#storage-note").textContent = adapter.name === "firestore" ? "Synced to owner cloud" : "Saved in this browser";
   metaTried.clear();
   render();
@@ -113,7 +124,7 @@ let backfilling = false;
 let tmdbReady = false;
 
 function metaPending() {
-  return [...state.movies.values()].filter((m) => !hasMeta(m) && !metaTried.has(m.tmdbId)).length;
+  return [...state.movies.values()].filter((m) => !hasMeta(m) && !metaTried.has(m.id)).length;
 }
 
 async function backfillMeta() {
@@ -121,19 +132,19 @@ async function backfillMeta() {
   backfilling = true;
   try {
     for (;;) {
-      const todo = [...state.movies.values()].filter((m) => !hasMeta(m) && !metaTried.has(m.tmdbId)).slice(0, 3);
+      const todo = [...state.movies.values()].filter((m) => !hasMeta(m) && !metaTried.has(m.id)).slice(0, 3);
       if (!todo.length) break;
       await Promise.all(todo.map(async (m) => {
-        metaTried.add(m.tmdbId);
+        metaTried.add(m.id);
         try {
-          const meta = await fetchMovieMeta(m.tmdbId);
-          const cur = state.movies.get(m.tmdbId);
+          const meta = await fetchMovieMeta(m);
+          const cur = state.movies.get(m.id);
           if (!cur) return;
           const next = normalizeMovie({ ...cur, ...meta });
           await state.adapter.updateMovie(next);
-          state.movies.set(next.tmdbId, next);
+          state.movies.set(next.id, next);
         } catch (err) {
-          console.warn("Couldn't fetch details for", m.tmdbId, err);
+          console.warn("Couldn't fetch details for", m.id, err);
         }
       }));
       if (state.view === "stats" && !state.search.query) render({ drawer: false });
@@ -212,7 +223,7 @@ async function offerLocalMerge(uid) {
   writePref(MERGED_KEY(uid), "1");
   if (choice !== "merge") return;
   const local = await localStorageAdapter.getMovies();
-  await runImport(local, "merge");
+  await runImport(local, "merge", await localStorageAdapter.getLists());
 }
 
 function setOwnerButton(mode) {
@@ -330,7 +341,7 @@ async function saveMovie(movie, { isNew = false } = {}) {
     toast(state.adapter.name === "firestore" ? "Cloud save failed — check your connection or rules." : "Couldn't save (browser storage full or blocked).", "error");
     throw err;
   }
-  state.movies.set(m.tmdbId, m);
+  state.movies.set(m.id, m);
   render();
   if (!hasMeta(m)) backfillMeta();
   return m;
@@ -344,11 +355,23 @@ async function deleteMovie(id) {
     throw err;
   }
   state.movies.delete(id);
+  // Drop it from any list that referenced it.
+  for (const l of state.lists.filter((x) => x.items.includes(id))) {
+    await saveList({ ...l, items: l.items.filter((x) => x !== id) }).catch(() => {});
+  }
   render();
 }
 
+/** A fresh library entry from a TMDB search result. */
+function fromResult(r, extra = {}) {
+  return normalizeMovie({
+    mediaType: r.mediaType, tmdbId: r.tmdbId, title: r.title, posterPath: r.posterPath,
+    customPosterUrl: null, inWatchlist: false, addedDate: todayISO(), watchLog: [], ...extra,
+  });
+}
+
 function resultById(id) {
-  return state.search.results.find((r) => r.tmdbId === id);
+  return state.search.results.find((r) => r.id === id);
 }
 
 async function addToWatchlist(id) {
@@ -358,7 +381,7 @@ async function addToWatchlist(id) {
   } else {
     const r = resultById(id);
     if (!r) return;
-    await saveMovie({ tmdbId: r.tmdbId, title: r.title, posterPath: r.posterPath, customPosterUrl: null, inWatchlist: true, addedDate: todayISO(), watchLog: [] }, { isNew: true });
+    await saveMovie(fromResult(r, { inWatchlist: true }), { isNew: true });
   }
   toast("Added to watchlist");
 }
@@ -369,6 +392,7 @@ const VIEW_META = {
   watchlist: { kicker: "Channel 01", title: "Watchlist" },
   watched: { kicker: "Channel 02", title: "Watched" },
   stats: { kicker: "Channel 03", title: "Stats" },
+  lists: { kicker: "Channel 04", title: "Lists" },
 };
 
 const SORTS = {
@@ -420,10 +444,14 @@ function render({ drawer = true } = {}) {
     view.replaceChildren(renderSearch());
   } else {
     const meta = VIEW_META[state.view];
-    $("#view-kicker").textContent = meta.kicker;
-    $("#view-title").textContent = meta.title;
+    const openList = state.view === "lists" && state.listId ? state.lists.find((l) => l.id === state.listId) : null;
+    $("#view-kicker").textContent = openList ? `${meta.kicker} · ${openList.ranked ? "Ranked list" : "List"}` : meta.kicker;
+    $("#view-title").textContent = openList ? `${openList.emoji ? openList.emoji + " " : ""}${openList.name}` : meta.title;
     renderSort(sortEl);
-    view.replaceChildren(state.view === "stats" ? renderStats() : renderGrid(state.view));
+    view.replaceChildren(
+      state.view === "stats" ? renderStats()
+        : state.view === "lists" ? (openList ? listDetail(openList, state.movies) : listShelf(state.lists, state.movies))
+        : renderGrid(state.view));
   }
   if (drawer && state.drawer) renderDrawer();
 }
@@ -463,8 +491,11 @@ function renderSearch() {
   const s = state.search;
   if (s.error) return emptyState("No signal", s.error);
   if (s.loading && !s.results.length) return h("p", { class: "loading micro", text: "Tuning…" });
-  if (!s.results.length) return emptyState("No matches", "Try a different title or spelling.");
-  return h("div", { class: "grid" }, s.results.map((r) => searchCard(r, state.movies.get(r.tmdbId))));
+  const addOwn = h("button", { type: "button", class: "btn", dataset: { action: "custom-add" } }, icon("plus"), "Add it yourself");
+  if (!s.results.length) return emptyState("No matches", "Try a different spelling — or add it yourself if TMDB doesn't have it.", addOwn);
+  return h("div", {},
+    h("div", { class: "grid" }, s.results.map((r) => searchCard(r, state.movies.get(r.id)))),
+    h("div", { class: "search-foot" }, h("span", { class: "muted", text: "Can't find it?" }), addOwn));
 }
 
 function renderStats() {
@@ -494,7 +525,7 @@ function renderStats() {
     recent.length
       ? h("ol", { class: "recent-list" }, recent.map((e) =>
           h("li", {},
-            h("button", { type: "button", class: "recent-item", dataset: { action: "open", id: e.movie.tmdbId } },
+            h("button", { type: "button", class: "recent-item", dataset: { action: "open", id: e.movie.id } },
               h("span", { class: "mono", text: e.date || "—" }),
               h("span", { class: "recent-title", text: e.movie.title }),
               miniMeter(e.rating)))))
@@ -534,16 +565,20 @@ function formatHours(movies) {
 // ---------------------------------------------------------------- batch add
 
 /**
- * Saves batch-add choices. items: [{ tmdbId, title, posterPath, action: "watchlist"|"watched", rating }].
+ * Saves batch-add choices. items: [{ id, mediaType, tmdbId, title, posterPath, action: "watchlist"|"watched", rating }].
  * Watched ones get an undated entry; they're returned in `review` for the optional detail pass.
  */
-async function applyBatch(items) {
+async function applyBatch(items, target = {}) {
   let added = 0, updated = 0, failed = 0;
   const review = [];
   document.body.classList.add("busy");
   for (const it of items) {
-    const cur = state.movies.get(it.tmdbId);
-    const base = cur || { tmdbId: it.tmdbId, title: it.title, posterPath: it.posterPath, customPosterUrl: null, inWatchlist: false, addedDate: todayISO(), watchLog: [] };
+    const cur = state.movies.get(it.id);
+    const base = cur || {
+      id: it.id, mediaType: it.mediaType, tmdbId: it.tmdbId, title: it.title, posterPath: it.posterPath, emoji: it.emoji || null,
+      releaseYear: it.mediaType === "custom" && /^\d{4}$/.test(it.year || "") ? Number(it.year) : null,
+      customPosterUrl: null, inWatchlist: false, addedDate: todayISO(), watchLog: [],
+    };
     const next = it.action === "watchlist"
       ? { ...base, inWatchlist: true }
       : { ...base, inWatchlist: false, watchLog: [...base.watchLog, { date: null, rating: it.rating ?? null, notes: "" }] };
@@ -551,19 +586,30 @@ async function applyBatch(items) {
     try {
       if (!m) throw new Error("invalid");
       if (cur) await state.adapter.updateMovie(m); else await state.adapter.addMovie(m);
-      state.movies.set(m.tmdbId, m);
+      state.movies.set(m.id, m);
       if (cur) updated++; else added++;
-      if (it.action === "watched") review.push({ id: m.tmdbId, rating: it.rating ?? null });
+      if (it.action === "watched") review.push({ id: m.id, rating: it.rating ?? null });
     } catch (err) {
       console.error(err);
       failed++;
     }
   }
   document.body.classList.remove("busy");
+  let listName = null;
+  const savedIds = items.map((it) => it.id).filter((id) => state.movies.has(id));
+  if (savedIds.length && (target.listId || target.newListName)) {
+    try {
+      const list = target.listId ? state.lists.find((l) => l.id === target.listId) : await createList({ name: target.newListName, emoji: "📼" });
+      if (list) { await addToList(list.id, savedIds); listName = list.name; }
+    } catch (err) {
+      console.error(err);
+      toast("Movies saved, but adding them to the list failed.", "error");
+    }
+  }
   render();
   backfillMeta();
   if (failed) toast(`${failed} movie${failed === 1 ? "" : "s"} couldn't be saved.`, "error");
-  return { added, updated, failed, review };
+  return { added, updated, failed, review, listName };
 }
 
 function startReview(queue) {
@@ -574,7 +620,7 @@ function startReview(queue) {
 
 function reviewItem(movie) {
   const r = state.review;
-  return r && r.queue[r.i]?.id === movie.tmdbId ? r.queue[r.i] : null;
+  return r && r.queue[r.i]?.id === movie.id ? r.queue[r.i] : null;
 }
 
 function nextReview() {
@@ -594,7 +640,7 @@ function nextReview() {
 /** Replaces the undated entry batch add created with the details entered now. */
 async function saveReviewEntry(movie, item, date, rating, notes) {
   if (date && !isValidDate(date)) { toast("That date isn't valid.", "error"); return; }
-  const cur = state.movies.get(movie.tmdbId);
+  const cur = state.movies.get(movie.id);
   const log = [...cur.watchLog];
   let idx = -1;
   for (let i = log.length - 1; i >= 0; i--) {
@@ -618,7 +664,7 @@ function openDrawer(target) {
 
 function drawerMovie() {
   if (!state.drawer) return null;
-  if (state.drawer.pending) return state.movies.get(state.drawer.pending.tmdbId) || state.drawer.pending;
+  if (state.drawer.pending) return state.movies.get(state.drawer.pending.id) || state.drawer.pending;
   return state.movies.get(state.drawer.id) || null;
 }
 
@@ -626,11 +672,11 @@ function renderDrawer() {
   const movie = drawerMovie();
   const body = $("#drawer-body");
   if (!movie) { $("#drawer").close(); return; }
-  const inLib = state.movies.has(movie.tmdbId);
+  const inLib = state.movies.has(movie.id);
   const n = movie.watchLog.length;
-  const logId = `log-${movie.tmdbId}`;
+  const logId = `log-${movie.id}`;
 
-  const ed = inLib && state.editing?.id === movie.tmdbId ? movie.watchLog[state.editing.idx] || null : null;
+  const ed = inLib && state.editing?.id === movie.id ? movie.watchLog[state.editing.idx] || null : null;
   const rv = inLib && !ed ? reviewItem(movie) : null;
   const rating = ratingInput(`${logId}-rating`, ed ? ed.rating : rv ? rv.rating : null);
   // Blank by default: the date is often unknown for older watches, and the picker opens on today anyway.
@@ -669,7 +715,7 @@ function renderDrawer() {
       ? h("ol", { class: "history-list" }, [...movie.watchLog].reverse().map((e, i) => {
           const idx = n - 1 - i;
           const when = e.date || "unknown date";
-          return h("li", { class: `history-item${state.editing?.id === movie.tmdbId && state.editing.idx === idx ? " is-editing" : ""}` },
+          return h("li", { class: `history-item${state.editing?.id === movie.id && state.editing.idx === idx ? " is-editing" : ""}` },
             h("div", { class: "history-row" },
               h("span", { class: "mono", text: e.date || "Date unknown" }),
               h("span", { class: "screen-tag", text: idx === 0 ? "First watch" : `Rewatch #${idx}` }),
@@ -681,14 +727,16 @@ function renderDrawer() {
         }))
       : h("p", { class: "screen-empty", text: "No signal yet — log your first watch." }));
 
-  const tmdbLink = h("a", { href: `https://www.themoviedb.org/movie/${movie.tmdbId}`, target: "_blank", rel: "noopener noreferrer", class: "micro link", text: "View on TMDB ↗" });
+  const tmdbLink = movie.tmdbId
+    ? h("a", { href: `https://www.themoviedb.org/${movie.mediaType === "tv" ? "tv" : "movie"}/${movie.tmdbId}`, target: "_blank", rel: "noopener noreferrer", class: "micro link", text: "View on TMDB ↗" })
+    : h("span", { class: "micro", text: movie.releaseYear ? `Added by hand · ${movie.releaseYear}` : "Added by hand" });
 
   const actions = h("div", { class: "drawer-actions" });
   if (inLib) {
     actions.append(
       movie.inWatchlist
         ? h("button", { type: "button", class: "btn btn-sm", onclick: () => removeFromWatchlist(movie) }, icon("x"), "Remove from watchlist")
-        : h("button", { type: "button", class: "btn btn-sm", onclick: () => addToWatchlist(movie.tmdbId) }, icon("plus"), n ? "Queue a rewatch" : "Add to watchlist"),
+        : h("button", { type: "button", class: "btn btn-sm", onclick: () => addToWatchlist(movie.id) }, icon("plus"), n ? "Queue a rewatch" : "Add to watchlist"),
       h("button", { type: "button", class: "btn btn-sm btn-danger", onclick: () => removeMovie(movie) }, icon("trash"), "Remove from library"));
   }
 
@@ -699,7 +747,7 @@ function renderDrawer() {
     h("div", { class: "drawer-hero" },
       h("div", { class: "drawer-poster" },
         posterSlot(posterUrl(movie), { alt: `Poster for ${movie.title}`, lazy: false }),
-        inLib ? h("button", { type: "button", class: "icon-btn card-edit", "aria-label": "Edit poster", title: "Edit poster", onclick: () => openPosterEditor(movie.tmdbId) }, icon("pencil")) : null),
+        inLib ? h("button", { type: "button", class: "icon-btn card-edit", "aria-label": "Edit poster", title: "Edit poster", onclick: () => openPosterEditor(movie.id) }, icon("pencil")) : null),
       h("div", { class: "drawer-title-block" },
         h("h2", { id: "drawer-title", text: movie.title }),
         inLib ? statusLeds(movie) : null,
@@ -707,19 +755,20 @@ function renderDrawer() {
         tmdbLink)),
     logForm,
     inLib ? history : null,
+    listsSection(movie),
     actions].filter(Boolean));
 }
 
 function startEditEntry(movie, idx) {
   state.review = null;
-  state.editing = { id: movie.tmdbId, idx };
+  state.editing = { id: movie.id, idx };
   renderDrawer();
   $("#drawer .log-form")?.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
 }
 
 async function saveEditedEntry(movie, idx, date, rating, notes) {
   if (date && !isValidDate(date)) { toast("That date isn't valid.", "error"); return; }
-  const cur = state.movies.get(movie.tmdbId);
+  const cur = state.movies.get(movie.id);
   if (!cur?.watchLog[idx]) { state.editing = null; renderDrawer(); return; }
   const watchLog = cur.watchLog.map((e, i) => i === idx ? { date: date || null, rating: rating ?? null, notes: (notes || "").trim() } : e);
   state.editing = null;
@@ -729,21 +778,21 @@ async function saveEditedEntry(movie, idx, date, rating, notes) {
 
 async function logWatch(movie, date, rating, notes) {
   if (date && !isValidDate(date)) { toast("That date isn't valid.", "error"); return; }
-  const isNew = !state.movies.has(movie.tmdbId);
-  const base = isNew ? movie : state.movies.get(movie.tmdbId);
+  const isNew = !state.movies.has(movie.id);
+  const base = isNew ? movie : state.movies.get(movie.id);
   const next = {
     ...base,
     inWatchlist: false,
     watchLog: [...base.watchLog, { date: date || null, rating: rating ?? null, notes: (notes || "").trim() }],
   };
   await saveMovie(next, { isNew });
-  if (isNew) state.drawer = { id: movie.tmdbId };
+  if (isNew) state.drawer = { id: movie.id };
   renderDrawer();
   toast(next.watchLog.length > 1 ? `Logged rewatch — watched ${next.watchLog.length}×` : "Marked as watched");
 }
 
 async function deleteEntry(movie, idx) {
-  const cur = state.movies.get(movie.tmdbId);
+  const cur = state.movies.get(movie.id);
   const e = cur.watchLog[idx];
   const c = await choose({
     kicker: "Watch history", title: "Delete this watch?", text: e.date ? `The entry from ${e.date} will be removed from the history.` : "This undated entry will be removed from the history.",
@@ -757,20 +806,163 @@ async function deleteEntry(movie, idx) {
 }
 
 async function removeFromWatchlist(movie) {
-  if (movie.watchLog.length === 0) return removeMovie(movie);
+  const inAList = state.lists.some((l) => l.items.includes(movie.id));
+  if (movie.watchLog.length === 0 && !inAList) return removeMovie(movie);
   await saveMovie({ ...movie, inWatchlist: false });
 }
 
 async function removeMovie(movie) {
   const c = await choose({
     kicker: "Library", title: `Remove “${movie.title}”?`,
-    text: movie.watchLog.length ? `This deletes the film and its ${movie.watchLog.length} logged watch${movie.watchLog.length === 1 ? "" : "es"}.` : "It will be removed from your watchlist.",
+    text: movie.watchLog.length ? `This deletes it, its ${movie.watchLog.length} logged watch${movie.watchLog.length === 1 ? "" : "es"}, and removes it from any lists.` : "It will be removed from your library and any lists.",
     buttons: [{ label: "Cancel", value: "no" }, { label: "Remove", value: "yes", kind: "danger" }],
   });
   if (c !== "yes") return;
-  await deleteMovie(movie.tmdbId);
+  await deleteMovie(movie.id);
   if ($("#drawer").open) $("#drawer").close();
   toast("Removed");
+}
+
+// ---------------------------------------------------------------- lists
+
+async function saveList(list) {
+  const l = normalizeList(list);
+  if (!l) throw new Error("Invalid list");
+  try {
+    await state.adapter.saveList(l);
+  } catch (err) {
+    console.error(err);
+    toast(err?.code === "permission-denied" ? "Lists need the updated Firestore rules — see DEPLOY.md." : "Couldn't save the list.", "error");
+    throw err;
+  }
+  const i = state.lists.findIndex((x) => x.id === l.id);
+  if (i >= 0) state.lists[i] = l; else state.lists.push(l);
+  return l;
+}
+
+async function createList(fields) {
+  return saveList({ id: newId("l"), items: [], createdDate: todayISO(), ...fields });
+}
+
+async function newListFlow() {
+  const f = await listForm();
+  if (!f) return null;
+  const l = await createList(f);
+  toast(`Created “${l.name}”`);
+  return l;
+}
+
+async function editListFlow(id) {
+  const cur = state.lists.find((l) => l.id === id);
+  if (!cur) return;
+  const f = await listForm(cur);
+  if (!f) return;
+  await saveList({ ...cur, ...f });
+  render();
+}
+
+async function deleteListFlow(id) {
+  const cur = state.lists.find((l) => l.id === id);
+  if (!cur) return;
+  const c = await choose({
+    kicker: "Lists", title: `Delete “${cur.name}”?`,
+    text: "Only the list is deleted — the titles stay in your library.",
+    buttons: [{ label: "Cancel", value: "no" }, { label: "Delete list", value: "yes", kind: "danger" }],
+  });
+  if (c !== "yes") return;
+  await state.adapter.removeList(id);
+  state.lists = state.lists.filter((l) => l.id !== id);
+  state.listId = null;
+  render();
+  toast("List deleted");
+}
+
+async function addToList(listId, ids) {
+  const cur = state.lists.find((l) => l.id === listId);
+  if (!cur) return;
+  await saveList({ ...cur, items: [...cur.items, ...ids.filter((id) => !cur.items.includes(id))] });
+}
+
+async function removeFromList(listId, movieId) {
+  const cur = state.lists.find((l) => l.id === listId);
+  if (!cur) return;
+  await saveList({ ...cur, items: cur.items.filter((x) => x !== movieId) });
+  const m = state.movies.get(movieId);
+  render();
+  // A title that's now in no list, not queued and never watched would be invisible everywhere.
+  if (m && !m.inWatchlist && !m.watchLog.length && !state.lists.some((l) => l.items.includes(movieId))) {
+    const c = await choose({
+      kicker: "Library", title: `Keep “${m.title}”?`,
+      text: "It isn't on your watchlist, in any list, or watched.",
+      buttons: [{ label: "Remove it", value: "remove", kind: "danger" }, { label: "Move to watchlist", value: "keep", kind: "hero" }],
+    });
+    if (c === "keep") await saveMovie({ ...m, inWatchlist: true });
+    else if (c === "remove") await deleteMovie(movieId);
+  }
+}
+
+async function moveInList(listId, movieId, dir) {
+  const cur = state.lists.find((l) => l.id === listId);
+  if (!cur) return;
+  const items = [...cur.items];
+  const i = items.indexOf(movieId);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= items.length) return;
+  [items[i], items[j]] = [items[j], items[i]];
+  await saveList({ ...cur, items });
+  render();
+  document.querySelector(`.card[data-id="${CSS.escape(movieId)}"] [data-action="${dir < 0 ? "list-up" : "list-down"}"]`)?.focus();
+}
+
+/** Drawer section: which lists this title is in, plus "Add to list". */
+function listsSection(movie) {
+  const mine = state.lists.filter((l) => l.items.includes(movie.id));
+  return h("section", { class: "drawer-lists" },
+    h("span", { class: "micro", text: "Lists" }),
+    h("div", { class: "chip-row" },
+      mine.map((l) => h("button", { type: "button", class: "list-chip", onclick: () => { $("#drawer").close(); state.view = "lists"; state.listId = l.id; render(); } },
+        `${l.emoji || "📼"} ${l.name}`)),
+      h("button", { type: "button", class: "btn btn-xs", onclick: () => pickLists(movie) }, icon("plus"), mine.length ? "Change" : "Add to list")));
+}
+
+async function pickLists(movie) {
+  const memberOf = new Set(state.lists.filter((l) => l.items.includes(movie.id)).map((l) => l.id));
+  const res = await listPicker(movie.title, state.lists, memberOf);
+  if (!res) return;
+  // A title picked from search isn't in the library yet: save it first (not on the watchlist).
+  if (!state.movies.has(movie.id)) {
+    await saveMovie({ ...movie, inWatchlist: false }, { isNew: true });
+    state.drawer = { id: movie.id };
+  }
+  if (res.newList) {
+    const l = await createList(res.newList);
+    res.selected.add(l.id);
+  }
+  for (const l of state.lists) {
+    const has = l.items.includes(movie.id);
+    const want = res.selected.has(l.id);
+    if (want && !has) await saveList({ ...l, items: [...l.items, movie.id] });
+    if (!want && has) await saveList({ ...l, items: l.items.filter((x) => x !== movie.id) });
+  }
+  render();
+  toast(res.selected.size ? `In ${res.selected.size} list${res.selected.size === 1 ? "" : "s"}` : "Removed from lists");
+}
+
+// ---------------------------------------------------------------- add it yourself
+
+async function addCustom(prefill = "") {
+  const f = await customForm(prefill);
+  if (!f) return;
+  const m = normalizeMovie({
+    id: newId("m"), mediaType: "custom", title: f.title, releaseYear: f.year, emoji: f.emoji,
+    inWatchlist: f.action === "watchlist", addedDate: todayISO(), watchLog: [],
+  });
+  if (f.action === "watched") {
+    openDrawer({ pending: m }); // saved when the watch is logged
+    return;
+  }
+  await saveMovie(m, { isNew: true });
+  toast(`Added “${m.title}” to your watchlist`);
 }
 
 // ---------------------------------------------------------------- poster editor
@@ -782,12 +974,22 @@ function openPosterEditor(id) {
   $("#poster-movie").textContent = movie.title;
   const input = $("#poster-url");
   input.value = movie.customPosterUrl || "";
+  $("#poster-emoji").value = movie.emoji || "";
   const preview = $("#poster-preview");
-  if (!preview.querySelector(".poster-fallback")) preview.append(h("div", { class: "poster-fallback", "aria-hidden": "true" }, icon("film")));
+  resetPreviewFallback(movie.emoji);
   $("#poster-reset").disabled = !movie.customPosterUrl;
   updatePosterPreview();
   $("#poster-dialog").showModal();
   input.focus();
+}
+
+/** The preview's backdrop: the emoji being typed, or the film icon. */
+function resetPreviewFallback(emoji) {
+  const preview = $("#poster-preview");
+  preview.querySelector(".poster-fallback")?.remove();
+  preview.append(emoji
+    ? h("div", { class: "poster-fallback poster-emoji", "aria-hidden": "true" }, h("span", { text: emoji }))
+    : h("div", { class: "poster-fallback", "aria-hidden": "true" }, icon("film")));
 }
 
 /** Returns { ok, url } for the current field value and updates preview + hint. */
@@ -800,7 +1002,7 @@ function updatePosterPreview() {
   let ok = true, url = null;
 
   if (!raw) {
-    hint.textContent = "Empty = use the default TMDB poster.";
+    hint.textContent = movie.posterPath ? "Empty = use the default TMDB poster." : "Empty = show the emoji.";
     hint.className = "hint";
     setSlotImage(preview, movie.posterPath ? `https://image.tmdb.org/t/p/w500${movie.posterPath}` : null, "Default poster preview", false);
   } else {
@@ -834,9 +1036,9 @@ async function savePoster(e) {
   const { ok, url } = updatePosterPreview();
   if (!ok) return;
   const movie = state.movies.get(state.posterEditId);
-  await saveMovie({ ...movie, customPosterUrl: url });
+  await saveMovie({ ...movie, customPosterUrl: url, emoji: cleanEmoji($("#poster-emoji").value) });
   $("#poster-dialog").close();
-  toast(url ? "Poster updated" : "Using default poster");
+  toast(url ? "Poster updated" : movie.posterPath ? "Using default poster" : "Saved");
 }
 
 async function resetPoster() {
@@ -849,7 +1051,7 @@ async function resetPoster() {
 // ---------------------------------------------------------------- import / export
 
 function exportLibrary() {
-  const data = buildExport([...state.movies.values()]);
+  const data = buildExport([...state.movies.values()], state.lists);
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
   const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
@@ -859,15 +1061,15 @@ function exportLibrary() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  toast(`Exported ${data.movies.length} movies`);
+  toast(`Exported ${data.movies.length} titles${data.lists.length ? ` and ${data.lists.length} lists` : ""}`);
 }
 
 async function importFile(file) {
   if (!file) return;
   if (file.size > 5 * 1024 * 1024) { toast("File too large (max 5 MB).", "error"); return; }
-  let incoming, skipped;
+  let incoming, incomingLists, skipped;
   try {
-    ({ movies: incoming, skipped } = parseImport(JSON.parse(await file.text())));
+    ({ movies: incoming, lists: incomingLists, skipped } = parseImport(JSON.parse(await file.text())));
   } catch (err) {
     toast(err instanceof SyntaxError ? "That file isn't valid JSON." : err.message, "error");
     return;
@@ -880,15 +1082,15 @@ async function importFile(file) {
     buttons: [{ label: "Cancel", value: "cancel" }, { label: "Replace", value: "replace", kind: "danger" }, { label: "Merge", value: "merge", kind: "hero" }],
   });
   if (mode !== "merge" && mode !== "replace") return;
-  await runImport(incoming, mode);
+  await runImport(incoming, mode, incomingLists);
 }
 
-async function runImport(incoming, mode) {
+async function runImport(incoming, mode, incomingLists = []) {
   if (state.busy) return;
   state.busy = true;
   document.body.classList.add("busy");
   try {
-    const { added, merged } = await applyImport(state.adapter, [...state.movies.values()], incoming, mode);
+    const { added, merged } = await applyImport(state.adapter, [...state.movies.values()], incoming, mode, state.lists, incomingLists);
     await useAdapter(state.adapter);
     toast(`Import done: ${added} added, ${merged} merged`);
   } catch (err) {
@@ -970,6 +1172,7 @@ function wireEvents() {
   document.querySelectorAll(".rail-btn").forEach((b) => b.addEventListener("click", () => {
     state.view = b.dataset.view;
     state.genre = null;
+    state.listId = null;
     if (state.search.query) exitSearch(); else render();
     $("#main").focus({ preventScroll: true });
   }));
@@ -990,7 +1193,7 @@ function wireEvents() {
   document.addEventListener("click", async (e) => {
     const el = e.target.closest("[data-action]");
     if (!el) return;
-    const id = Number(el.dataset.id);
+    const id = el.dataset.id;
     try {
       switch (el.dataset.action) {
         case "open": openDrawer({ id }); break;
@@ -998,10 +1201,19 @@ function wireEvents() {
         case "add-watchlist": await addToWatchlist(id); break;
         case "log-new": {
           const r = resultById(id);
-          if (r) openDrawer({ pending: { tmdbId: r.tmdbId, title: r.title, posterPath: r.posterPath, customPosterUrl: null, inWatchlist: false, addedDate: todayISO(), watchLog: [] } });
+          if (r) openDrawer({ pending: fromResult(r) });
           break;
         }
         case "batch": openBatch(); break;
+        case "custom-add": await addCustom($("#q").value.trim()); break;
+        case "list-new": { const l = await newListFlow(); if (l) { state.listId = l.id; render(); } break; }
+        case "list-open": state.listId = id; render(); window.scrollTo({ top: 0 }); break;
+        case "list-back": state.listId = null; render(); break;
+        case "list-edit": await editListFlow(id); break;
+        case "list-delete": await deleteListFlow(id); break;
+        case "list-up": await moveInList(state.listId, id, -1); break;
+        case "list-down": await moveInList(state.listId, id, 1); break;
+        case "list-remove": await removeFromList(state.listId, id); break;
         case "export": exportLibrary(); break;
         case "import": $("#import-file").click(); break;
       }
@@ -1018,6 +1230,7 @@ function wireEvents() {
 
   let posterTimer = null;
   $("#poster-url").addEventListener("input", () => { clearTimeout(posterTimer); posterTimer = setTimeout(updatePosterPreview, 250); });
+  $("#poster-emoji").addEventListener("input", () => resetPreviewFallback(cleanEmoji($("#poster-emoji").value)));
   $("#poster-form").addEventListener("submit", (e) => savePoster(e).catch(() => {}));
   $("#poster-reset").addEventListener("click", () => resetPoster().catch(() => {}));
 
