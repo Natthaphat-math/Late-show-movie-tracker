@@ -521,8 +521,8 @@ function renderDrawer() {
 
   const rv = inLib ? reviewItem(movie) : null;
   const rating = ratingInput(`${logId}-rating`, rv ? rv.rating : null);
-  const dateInput = h("input", { type: "date", id: `${logId}-date`, value: rv ? "" : todayISO(), max: "2100-12-31" });
-  const noDate = h("button", { type: "button", class: "btn btn-xs btn-ghost", text: "Don't remember", onclick: () => { dateInput.value = ""; dateInput.focus(); } });
+  // Blank by default: the date is often unknown for older watches, and the picker opens on today anyway.
+  const dateInput = h("input", { type: "date", id: `${logId}-date`, max: "2100-12-31" });
   const notes = h("textarea", { id: `${logId}-notes`, rows: 3, maxlength: 2000, placeholder: "Where, with whom, what stuck with you…" });
 
   const submit = (e) => {
@@ -532,11 +532,9 @@ function renderDrawer() {
   };
   const logForm = h("form", { class: "panel log-form", onsubmit: submit },
     h("span", { class: "micro panel-label", text: rv ? `Add details · ${state.review.i + 1} of ${state.review.queue.length}` : n ? "Log a rewatch" : "Log a watch" }),
-    h("label", { class: "field-label", for: dateInput.id, text: "Date (optional)" }),
-    h("div", { class: "date-row" }, dateInput, noDate),
-    h("p", { class: "hint", text: "Leave it empty if you don't remember when you watched it." }),
-    h("span", { class: "field-label", text: "Rating (optional)" }), rating.el,
-    h("label", { class: "field-label", for: notes.id, text: "Notes (optional)" }), notes,
+    h("label", { class: "field-label", for: dateInput.id, text: "Date" }), dateInput,
+    h("span", { class: "field-label", text: "Rating" }), rating.el,
+    h("label", { class: "field-label", for: notes.id, text: "Notes" }), notes,
     rv
       ? h("div", { class: "review-actions" },
           h("button", { type: "button", class: "btn btn-ghost", text: "Skip", onclick: nextReview }),

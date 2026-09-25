@@ -226,9 +226,6 @@ input[type="date"] {
   min-height: 46px; text-align: left;
 }
 input[type="date"]::-webkit-date-and-time-value { text-align: left; }
-.date-row { display: flex; align-items: center; gap: 10px; }
-.date-row input { flex: 1; }
-.date-row .btn { flex: none; }
 input:focus-visible, textarea:focus-visible { outline: none; box-shadow: var(--s1) var(--s1) 0 var(--hero); }
 .field-label { font: 800 13px/1.2 var(--font-head); margin-top: 6px; display: block; }
 .hint { font-size: 13px; color: var(--text-soft); margin-top: 6px; }
@@ -842,12 +839,15 @@ dialog::backdrop { background: var(--backdrop); }
   .attribution { align-items: flex-start; }
 }
 
-@media (max-width: 420px) {
+@media (max-width: 480px) {
   .brand-text .micro { display: none; }
   .brand-name { white-space: nowrap; font-size: 18px; }
   .brand-mark { width: 40px; height: 40px; }
   .themes { gap: 6px; }
   .swatch { width: 26px; height: 26px; }
+}
+
+@media (max-width: 420px) {
   .poster-editor { grid-template-columns: minmax(0, 1fr); }
   .poster-slot-lg { width: 140px; }
   .meter .seg { min-width: 0; }

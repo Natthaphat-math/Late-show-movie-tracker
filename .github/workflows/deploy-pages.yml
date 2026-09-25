@@ -47,6 +47,17 @@ jobs:
           # Copy JS modules, but never the template or any local config.
           find js -maxdepth 1 -name '*.js' ! -name 'config.example.js' ! -name 'config.js' -exec cp {} _site/js/ \;
 
+      # Stamp every CSS/JS reference with the commit, so a new deploy never mixes a fresh
+      # index.html with cached old scripts (GitHub Pages lets browsers cache for 10 min).
+      - name: Version asset URLs
+        if: steps.check.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          v="${GITHUB_SHA::8}"
+          sed -i -E "s#(href=\"css/[a-z-]+\.css)\"#\1?v=$v\"#g; s#(src=\"js/[a-z-]+\.js)\"#\1?v=$v\"#g" _site/index.html
+          sed -i -E "s#(from \"\./[a-z-]+\.js)\"#\1?v=$v\"#g; s#(import\(\"\./[a-z-]+\.js)\"\)#\1?v=$v\")#g" _site/js/*.js
+          grep -o 'styles.css?v=[a-f0-9]*\|app.js?v=[a-f0-9]*' _site/index.html
+
       - name: Write js/config.js from secrets
         if: steps.check.outputs.present == 'true'
         env:
