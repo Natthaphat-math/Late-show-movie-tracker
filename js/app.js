@@ -28,6 +28,7 @@ const state = {
   posterEditId: null,
   owner: null,  // signed-in owner user
   review: null, // { queue: [{ id, rating }], i } — one-by-one detail pass after batch add
+  editing: null, // { id, idx } — watch entry being edited in the drawer
   busy: false,
 };
 
@@ -60,7 +61,39 @@ function ownerModeAvailable() {
   return Boolean(FIREBASE_CONFIG && OWNER_EMAIL && OWNER_EMAIL.includes("@"));
 }
 
+// ---- cloud save indicator: counts Firestore writes still waiting for the server.
+let pendingWrites = 0;
+
+function track(promise) {
+  pendingWrites++;
+  renderSync();
+  return promise.finally(() => { pendingWrites--; renderSync(); });
+}
+
+/** Wraps the Firestore adapter so every write shows on the owner pill until the server confirms it. */
+function withSyncTracking(adapter) {
+  if (adapter.name !== "firestore" || adapter.tracked) return adapter;
+  return {
+    name: adapter.name,
+    tracked: true,
+    getMovies: () => adapter.getMovies(),
+    addMovie: (m) => track(adapter.addMovie(m)),
+    updateMovie: (m) => track(adapter.updateMovie(m)),
+    removeMovie: (id) => track(adapter.removeMovie(id)),
+  };
+}
+
+function renderSync() {
+  const btn = $("#owner-btn");
+  if (btn.dataset.mode !== "on") return;
+  const busy = pendingWrites > 0;
+  btn.dataset.sync = busy ? "busy" : "idle";
+  btn.querySelector(".owner-label").textContent = busy ? "Saving…" : "Owner";
+  btn.title = busy ? "Saving to the cloud — keep the app open" : `Signed in as ${state.owner?.email || "owner"} · all changes saved`;
+}
+
 async function useAdapter(adapter) {
+  adapter = withSyncTracking(adapter);
   state.adapter = adapter;
   const list = await adapter.getMovies();
   state.movies = new Map(list.map((m) => [m.tmdbId, m]));
@@ -146,6 +179,7 @@ function setOwnerButton(mode) {
   label.textContent = mode === "on" ? "Owner" : mode === "loading" ? "Linking…" : "Local";
   btn.setAttribute("aria-label", mode === "on" ? "Signed in as owner — sign out" : "Local mode — owner sign-in");
   btn.title = mode === "on" ? `Signed in as ${state.owner?.email || "owner"}` : "Data saved in this browser. Owner? Sign in.";
+  if (mode === "on") renderSync(); else delete btn.dataset.sync;
 }
 
 async function onOwnerButton() {
@@ -519,23 +553,32 @@ function renderDrawer() {
   const n = movie.watchLog.length;
   const logId = `log-${movie.tmdbId}`;
 
-  const rv = inLib ? reviewItem(movie) : null;
-  const rating = ratingInput(`${logId}-rating`, rv ? rv.rating : null);
+  const ed = inLib && state.editing?.id === movie.tmdbId ? movie.watchLog[state.editing.idx] || null : null;
+  const rv = inLib && !ed ? reviewItem(movie) : null;
+  const rating = ratingInput(`${logId}-rating`, ed ? ed.rating : rv ? rv.rating : null);
   // Blank by default: the date is often unknown for older watches, and the picker opens on today anyway.
   const dateInput = h("input", { type: "date", id: `${logId}-date`, max: "2100-12-31" });
+  if (ed?.date) dateInput.value = ed.date;
   const notes = h("textarea", { id: `${logId}-notes`, rows: 3, maxlength: 2000, placeholder: "Where, with whom, what stuck with you…" });
+  if (ed) notes.value = ed.notes;
 
   const submit = (e) => {
     e.preventDefault();
-    if (rv) saveReviewEntry(movie, rv, dateInput.value, rating.value, notes.value).catch(() => {});
+    if (ed) saveEditedEntry(movie, state.editing.idx, dateInput.value, rating.value, notes.value).catch(() => {});
+    else if (rv) saveReviewEntry(movie, rv, dateInput.value, rating.value, notes.value).catch(() => {});
     else logWatch(movie, dateInput.value, rating.value, notes.value);
   };
-  const logForm = h("form", { class: "panel log-form", onsubmit: submit },
-    h("span", { class: "micro panel-label", text: rv ? `Add details · ${state.review.i + 1} of ${state.review.queue.length}` : n ? "Log a rewatch" : "Log a watch" }),
+  const formLabel = ed ? "Edit watch" : rv ? `Add details · ${state.review.i + 1} of ${state.review.queue.length}` : n ? "Log a rewatch" : "Log a watch";
+  const logForm = h("form", { class: `panel log-form${ed ? " is-editing" : ""}`, onsubmit: submit },
+    h("span", { class: "micro panel-label", text: formLabel }),
     h("label", { class: "field-label", for: dateInput.id, text: "Date" }), dateInput,
     h("span", { class: "field-label", text: "Rating" }), rating.el,
     h("label", { class: "field-label", for: notes.id, text: "Notes" }), notes,
-    rv
+    ed
+      ? h("div", { class: "review-actions" },
+          h("button", { type: "button", class: "btn btn-ghost", text: "Cancel", onclick: () => { state.editing = null; renderDrawer(); } }),
+          h("button", { type: "submit", class: "btn btn-hero", text: "Save changes" }))
+      : rv
       ? h("div", { class: "review-actions" },
           h("button", { type: "button", class: "btn btn-ghost", text: "Skip", onclick: nextReview }),
           h("button", { type: "submit", class: "btn btn-hero" }, state.review.i + 1 < state.review.queue.length ? "Save & next →" : "Save & finish"))
@@ -548,12 +591,15 @@ function renderDrawer() {
     n
       ? h("ol", { class: "history-list" }, [...movie.watchLog].reverse().map((e, i) => {
           const idx = n - 1 - i;
-          return h("li", { class: "history-item" },
+          const when = e.date || "unknown date";
+          return h("li", { class: `history-item${state.editing?.id === movie.tmdbId && state.editing.idx === idx ? " is-editing" : ""}` },
             h("div", { class: "history-row" },
               h("span", { class: "mono", text: e.date || "Date unknown" }),
               h("span", { class: "screen-tag", text: idx === 0 ? "First watch" : `Rewatch #${idx}` }),
               miniMeter(e.rating),
-              h("button", { type: "button", class: "icon-btn icon-btn-screen", "aria-label": `Delete watch on ${e.date || "unknown date"}`, onclick: () => deleteEntry(movie, idx) }, icon("trash"))),
+              h("span", { class: "history-btns" },
+                h("button", { type: "button", class: "icon-btn icon-btn-screen", "aria-label": `Edit watch on ${when}`, title: "Edit", onclick: () => startEditEntry(movie, idx) }, icon("pencil")),
+                h("button", { type: "button", class: "icon-btn icon-btn-screen", "aria-label": `Delete watch on ${when}`, title: "Delete", onclick: () => deleteEntry(movie, idx) }, icon("trash")))),
             e.notes ? h("p", { class: "history-notes", text: e.notes }) : null);
         }))
       : h("p", { class: "screen-empty", text: "No signal yet — log your first watch." }));
@@ -587,6 +633,23 @@ function renderDrawer() {
     actions].filter(Boolean));
 }
 
+function startEditEntry(movie, idx) {
+  state.review = null;
+  state.editing = { id: movie.tmdbId, idx };
+  renderDrawer();
+  $("#drawer .log-form")?.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+
+async function saveEditedEntry(movie, idx, date, rating, notes) {
+  if (date && !isValidDate(date)) { toast("That date isn't valid.", "error"); return; }
+  const cur = state.movies.get(movie.tmdbId);
+  if (!cur?.watchLog[idx]) { state.editing = null; renderDrawer(); return; }
+  const watchLog = cur.watchLog.map((e, i) => i === idx ? { date: date || null, rating: rating ?? null, notes: (notes || "").trim() } : e);
+  state.editing = null;
+  await saveMovie({ ...cur, watchLog });
+  toast("Watch updated");
+}
+
 async function logWatch(movie, date, rating, notes) {
   if (date && !isValidDate(date)) { toast("That date isn't valid.", "error"); return; }
   const isNew = !state.movies.has(movie.tmdbId);
@@ -611,6 +674,7 @@ async function deleteEntry(movie, idx) {
   });
   if (c !== "yes") return;
   const watchLog = cur.watchLog.filter((_, i) => i !== idx);
+  state.editing = null;
   // A film with no watches and not on the watchlist would vanish from both views, so keep it queued.
   await saveMovie({ ...cur, watchLog, inWatchlist: cur.inWatchlist || watchLog.length === 0 });
 }
@@ -879,7 +943,7 @@ function wireEvents() {
   $("#poster-form").addEventListener("submit", (e) => savePoster(e).catch(() => {}));
   $("#poster-reset").addEventListener("click", () => resetPoster().catch(() => {}));
 
-  $("#drawer").addEventListener("close", () => { state.drawer = null; state.review = null; });
+  $("#drawer").addEventListener("close", () => { state.drawer = null; state.review = null; state.editing = null; });
 
   // Close dialogs on [data-close] buttons and on backdrop clicks.
   document.querySelectorAll("dialog").forEach((dlg) => {

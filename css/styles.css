@@ -313,6 +313,7 @@ input:focus-visible, textarea:focus-visible { outline: none; box-shadow: var(--s
 .owner-btn .led { background: #b9b3a6; }
 .owner-btn[data-mode="on"] .led { background: var(--on-led); }
 .owner-btn[data-mode="loading"] .led { background: var(--accent); animation: blink 1s steps(2) infinite; }
+.owner-btn[data-mode="on"][data-sync="busy"] .led { background: var(--accent); animation: blink .6s steps(2) infinite; }
 @keyframes blink { 50% { opacity: .2; } }
 
 /* ---------------------------------------------------------------- left rail */
@@ -675,7 +676,9 @@ dialog::backdrop { background: var(--backdrop); }
 .history-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .history-row .mono { font-size: 14px; }
 .screen-tag { font: 700 10px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .12em; color: var(--phosphor-dim); }
-.history-row .icon-btn { margin-left: auto; }
+.history-btns { margin-left: auto; display: inline-flex; gap: 6px; }
+.history-item.is-editing { box-shadow: inset 3px 0 0 var(--accent); padding-left: 10px; }
+.log-form.is-editing { border-color: var(--accent); }
 .history-notes { margin-top: 6px; color: #ebe7dd; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .screen .meter-mini .seg { background: var(--screen-line); border-color: #000; }
 .screen .meter-mini .seg.on { background: var(--accent); }

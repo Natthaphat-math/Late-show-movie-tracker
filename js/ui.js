@@ -123,7 +123,6 @@ export function libraryCard(movie) {
   const open = h("button", { type: "button", class: "card-open", dataset: { action: "open", id: movie.tmdbId }, "aria-label": `Open ${movie.title}` });
   card.append(
     posterSlot(posterUrl(movie), { alt: "" }),
-    h("button", { type: "button", class: "icon-btn card-edit", dataset: { action: "edit-poster", id: movie.tmdbId }, "aria-label": `Edit poster for ${movie.title}`, title: "Edit poster" }, icon("pencil")),
     h("div", { class: "card-meta" }, h("h3", { class: "card-title", text: movie.title }), statusLeds(movie)),
     open,
   );
