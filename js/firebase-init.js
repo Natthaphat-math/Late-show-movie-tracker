@@ -70,6 +70,29 @@ export async function completeLinkSignIn(askEmail) {
   return true;
 }
 
+/**
+ * Signs in with a link the user pasted. On iPhone the home-screen app has its own
+ * storage, separate from Safari, so tapping the email link would sign in Safari instead.
+ * Copying the link and pasting it into the app signs in the app itself.
+ */
+export async function signInWithPastedLink(email, link) {
+  if (!fb.authMod.isSignInWithEmailLink(fb.auth, link)) {
+    const err = new Error("That isn't a sign-in link. Copy the whole link from the email.");
+    err.code = "app/not-a-signin-link";
+    throw err;
+  }
+  await fb.authMod.signInWithEmailLink(fb.auth, email, link);
+  try { localStorage.removeItem(EMAIL_KEY); } catch {}
+}
+
+export function storedSignInEmail() {
+  try { return localStorage.getItem(EMAIL_KEY) || ""; } catch { return ""; }
+}
+
+export function isStandaloneApp() {
+  return window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
 export function markOwnerDevice(on) {
   try {
     if (on) localStorage.setItem(OWNER_FLAG, "1");

@@ -8,7 +8,7 @@ they live in GitHub **Secrets**, and the workflow in `.github/workflows/deploy-p
 > DevTools. That can't be avoided in a client-only app. What protects your data is the Firestore security
 > rules, plus the API key restrictions below.
 
-Site URL: **https://natthaphat-math.github.io/late-show-movie-tracker/**
+Site URL: **https://natthaphat-math.github.io/Late-show-movie-tracker/**
 
 ## 1. Add the app files (one time)
 
@@ -51,6 +51,12 @@ missing, the run fails with a message naming it.
     `https://natthaphat-math.github.io/*` and `http://localhost:*/*`
   - API restrictions: Identity Toolkit API, Token Service API, Cloud Firestore API
 
+### If sign-in says `...getoobcode-are-blocked`
+
+This means the API key's **API restrictions** don't include Identity Toolkit. Open the key in Google Cloud Console
+→ Credentials → **API restrictions** and tick **Identity Toolkit API** and **Token Service API**, plus
+**Cloud Firestore API**, then Save. Changes can take up to 5 minutes to apply.
+
 ## 5. Security rules (deploy from your PC)
 
 The committed `firestore.rules` keeps the `YOUR_EMAIL_HERE` placeholder so your email stays out of
@@ -81,3 +87,20 @@ python3 -m http.server 8080   # http://localhost:8080
 Deleting the file isn't enough, because it stays in the git history. Regenerate the TMDB token
 (themoviedb.org → Settings → API), and if your Firebase API key was exposed without restrictions,
 restrict it or rotate it in Google Cloud Console.
+
+## Home-screen app (iPhone)
+
+1. Open the site in **Safari** and tap **Share → Add to Home Screen → Add**.
+2. Open **Late Show** from the home screen. It runs full-screen with the black Marquee theme.
+3. **Signing in inside the home-screen app:** iOS gives the home-screen app its own storage, separate from
+   Safari, so tapping the email link would sign in Safari, not the app. Instead:
+   1. In the app, tap **LOCAL**, enter your email and tap **Send link**.
+   2. In Mail, **long-press** the sign-in link and choose **Copy Link**. Don't tap it.
+   3. Go back to the app. In the sign-in window, paste the link under **"Using the home-screen app?"** and
+      tap **Sign in with pasted link**.
+   The pill turns to **OWNER**, and the app stays signed in from then on.
+
+The same paste option works if you open the email on a different device from the one you requested the link on.
+
+On Android (Chrome), use the menu → **Add to Home screen / Install app**. Tapping the email link usually works
+there directly.

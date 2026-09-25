@@ -14,7 +14,7 @@ import * as fire from "./firebase-init.js";
 const $ = (sel) => document.querySelector(sel);
 const THEME_KEY = "movieTracker.theme";
 const MERGED_KEY = (uid) => `movieTracker.mergedLocal.${uid}`;
-const THEMES = ["matinee", "arcade", "drivein"];
+const THEMES = ["marquee", "matinee", "arcade", "drivein"];
 
 const state = {
   config: { TMDB_READ_TOKEN: null, OWNER_EMAIL: null, FIREBASE_CONFIG: null },
@@ -34,7 +34,7 @@ const state = {
 boot();
 
 async function boot() {
-  applyTheme(readPref(THEME_KEY) || "matinee");
+  applyTheme(readPref(THEME_KEY) || "marquee");
   try {
     state.config = { ...state.config, ...(await import("./config.js")) };
   } catch {
@@ -95,6 +95,7 @@ async function handleAuth(user) {
     state.owner = user;
     fire.markOwnerDevice(true);
     setOwnerButton("on");
+    if ($("#signin-dialog").open) $("#signin-dialog").close();
     const fb = await fire.loadFirebase(state.config.FIREBASE_CONFIG);
     try {
       await useAdapter(createFirestoreAdapter(fb, user.uid));
@@ -163,7 +164,37 @@ async function onOwnerButton() {
   }
   $("#signin-hint").textContent = "We'll email a one-time sign-in link. No password.";
   $("#signin-hint").className = "hint";
+  if (!$("#signin-email").value) $("#signin-email").value = fire.storedSignInEmail();
+  $("#paste-url").value = "";
+  $("#paste-hint").hidden = true;
+  if (!fire.isStandaloneApp()) {
+    $("#paste-form .micro").textContent = "Link opened somewhere else?";
+    $("#paste-help").textContent = "If you opened the email on another device or browser, copy the sign-in link from it and paste it here to sign in on this one.";
+  }
   $("#signin-dialog").showModal();
+}
+
+async function onPasteSubmit(e) {
+  e.preventDefault();
+  const hint = $("#paste-hint");
+  const say = (text, kind) => { hint.textContent = text; hint.className = `hint hint-${kind}`; hint.hidden = false; };
+  const email = $("#signin-email").value.trim();
+  const link = $("#paste-url").value.trim();
+  if (email.toLowerCase() !== state.config.OWNER_EMAIL.toLowerCase()) { say("Enter the owner email in the field above first.", "warn"); return; }
+  let url = null;
+  try { url = new URL(link); } catch {}
+  if (!url || url.protocol !== "https:") { say("Paste the full https:// link from the email.", "warn"); return; }
+  const btn = $("#paste-go");
+  btn.disabled = true;
+  try {
+    await startFirebase();
+    await fire.signInWithPastedLink(email, url.href);
+    say("Signed in.", "ok");
+  } catch (err) {
+    say(`Couldn't sign in: ${friendlyAuthError(err)}`, "warn");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function onSignInSubmit(e) {
@@ -196,6 +227,9 @@ function askEmailForLink() {
 
 function friendlyAuthError(err) {
   const code = err?.code || "";
+  if (code === "app/not-a-signin-link") return err.message;
+  if (code.includes("are-blocked")) return "your Firebase API key's API restrictions block this. In Google Cloud → Credentials, allow Identity Toolkit API and Token Service API.";
+  if (code.includes("referer") || code.includes("referrer")) return "your Firebase API key doesn't allow this website. Add it under Website restrictions in Google Cloud → Credentials.";
   if (code.includes("invalid-action-code")) return "the link is expired or already used.";
   if (code.includes("unauthorized-continue-uri") || code.includes("unauthorized-domain")) return "this domain isn't in Firebase Auth → Authorized domains.";
   if (code.includes("operation-not-allowed")) return "Email link sign-in isn't enabled in Firebase Auth.";
@@ -674,8 +708,10 @@ function exitSearch() {
 // ---------------------------------------------------------------- theme / prefs
 
 function applyTheme(name) {
-  const theme = THEMES.includes(name) ? name : "matinee";
+  const theme = THEMES.includes(name) ? name : "marquee";
   document.documentElement.dataset.theme = theme;
+  // Status bar / browser chrome follows the page background.
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", getComputedStyle(document.body || document.documentElement).getPropertyValue("--bg").trim() || "#000000");
   document.querySelectorAll("[data-theme-pick]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.themePick === theme)));
   writePref(THEME_KEY, theme);
 }
@@ -717,6 +753,7 @@ function wireEvents() {
   document.querySelectorAll("[data-theme-pick]").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.themePick)));
   $("#owner-btn").addEventListener("click", onOwnerButton);
   $("#signin-form").addEventListener("submit", onSignInSubmit);
+  $("#paste-form").addEventListener("submit", onPasteSubmit);
 
   // Delegated actions for cards, stats and rail buttons.
   document.addEventListener("click", async (e) => {

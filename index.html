@@ -1,8 +1,17 @@
 <!doctype html>
-<html lang="en" data-theme="matinee">
+<html lang="en" data-theme="marquee">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark light">
+  <!-- Home-screen app (iOS + Android) -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Late Show">
   <title>Late Show — Movie Tracker</title>
   <meta name="description" content="Track your watchlist, watches and rewatches.">
   <meta http-equiv="Content-Security-Policy" content="
@@ -10,7 +19,7 @@
     script-src 'self' https://www.gstatic.com;
     style-src 'self' https://fonts.googleapis.com;
     font-src https://fonts.gstatic.com;
-    img-src https: data:;
+    img-src 'self' https: data:;
     connect-src 'self' https://api.themoviedb.org https://*.googleapis.com https://www.gstatic.com;
     frame-src https://*.firebaseapp.com;
     object-src 'none';
@@ -21,7 +30,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=Space+Mono:wght@400;700&display=swap">
   <link rel="stylesheet" href="css/styles.css">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='7' width='26' height='20' rx='5' fill='%23e4572e' stroke='%231a1a1a' stroke-width='3'/%3E%3Crect x='7' y='11' width='14' height='12' rx='2' fill='%231a1a1a'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='7' width='26' height='20' rx='5' fill='%23f03a45' stroke='%230b0b0b' stroke-width='3'/%3E%3Crect x='7' y='11' width='14' height='12' rx='2' fill='%231a1a1a'/%3E%3C/svg%3E">
   <script type="module" src="js/app.js"></script>
 </head>
 <body>
@@ -66,6 +75,7 @@
         <button type="button" class="swatch" role="radio" data-theme-pick="matinee" aria-label="Matinee theme"></button>
         <button type="button" class="swatch" role="radio" data-theme-pick="arcade" aria-label="Arcade theme"></button>
         <button type="button" class="swatch" role="radio" data-theme-pick="drivein" aria-label="Drive-in theme"></button>
+        <button type="button" class="swatch" role="radio" data-theme-pick="marquee" aria-label="Marquee dark theme"></button>
       </div>
       <button type="button" class="owner-btn" id="owner-btn" hidden>
         <span class="led" aria-hidden="true"></span>
@@ -152,6 +162,18 @@
         <span class="spacer"></span>
         <button type="button" class="btn btn-ghost" data-close>Cancel</button>
         <button type="submit" class="btn btn-hero" id="signin-send">Send link</button>
+      </div>
+    </form>
+    <form class="modal-body paste-link" id="paste-form" autocomplete="off">
+      <span class="micro">Using the home-screen app?</span>
+      <p class="modal-sub" id="paste-help">Tapping the email link opens Safari, which keeps a separate sign-in from the home-screen app.
+        Instead, <strong>long-press the link in the email → Copy Link</strong>, then paste it here.</p>
+      <label class="field-label" for="paste-url">Sign-in link</label>
+      <input id="paste-url" type="url" inputmode="url" placeholder="https://…firebaseapp.com/__/auth/action?…" spellcheck="false" maxlength="4096">
+      <p class="hint" id="paste-hint" hidden></p>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button type="submit" class="btn" id="paste-go">Sign in with pasted link</button>
       </div>
     </form>
   </dialog>
