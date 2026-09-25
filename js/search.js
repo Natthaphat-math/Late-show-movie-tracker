@@ -26,7 +26,24 @@ export async function searchMovies(query) {
   });
   if (res.status === 401) throw new Error("TMDB rejected the token (401). Check js/config.js.");
   if (!res.ok) throw new Error(`TMDB search failed (${res.status}).`);
-  const data = await res.json();
+  return cleanResults(await res.json());
+}
+
+/**
+ * One-off search for batch add: no shared abort (many run in parallel), optional year.
+ * Returns up to 8 cleaned results.
+ */
+export async function searchMoviesOnce(query, year = null) {
+  if (!token) throw new Error("TMDB token missing — see README.");
+  let url = `${API}/search/movie?query=${encodeURIComponent(query)}&include_adult=false&page=1`;
+  if (year) url += `&year=${encodeURIComponent(year)}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+  if (res.status === 429) throw new Error("TMDB rate limit — try again in a moment.");
+  if (!res.ok) throw new Error(`TMDB search failed (${res.status}).`);
+  return cleanResults(await res.json()).slice(0, 8);
+}
+
+function cleanResults(data) {
   return (Array.isArray(data.results) ? data.results : [])
     .filter((r) => Number.isSafeInteger(r.id) && typeof r.title === "string")
     .map((r) => ({

@@ -10,6 +10,7 @@ import {
   miniMeter, ratingInput, crtTv, toast, choose,
 } from "./ui.js";
 import * as fire from "./firebase-init.js";
+import { initBatch, openBatch } from "./batch.js";
 
 const $ = (sel) => document.querySelector(sel);
 const THEME_KEY = "movieTracker.theme";
@@ -26,6 +27,7 @@ const state = {
   drawer: null, // { id } or { pending: movie }
   posterEditId: null,
   owner: null,  // signed-in owner user
+  review: null, // { queue: [{ id, rating }], i } — one-by-one detail pass after batch add
   busy: false,
 };
 
@@ -44,6 +46,7 @@ async function boot() {
     $("#q").placeholder = "Add a TMDB token in js/config.js to search";
   }
   wireEvents();
+  initBatch({ getMovie: (id) => state.movies.get(id), apply: applyBatch, startReview });
   await useAdapter(localStorageAdapter);
 
   if (ownerModeAvailable()) {
@@ -418,6 +421,81 @@ function renderStats() {
   return h("div", { class: "stats" }, h("div", { class: "stats-hero" }, tv), h("div", { class: "stats-side" }, recentPanel, dataPanel));
 }
 
+// ---------------------------------------------------------------- batch add
+
+/**
+ * Saves batch-add choices. items: [{ tmdbId, title, posterPath, action: "watchlist"|"watched", rating }].
+ * Watched ones get an undated entry; they're returned in `review` for the optional detail pass.
+ */
+async function applyBatch(items) {
+  let added = 0, updated = 0, failed = 0;
+  const review = [];
+  document.body.classList.add("busy");
+  for (const it of items) {
+    const cur = state.movies.get(it.tmdbId);
+    const base = cur || { tmdbId: it.tmdbId, title: it.title, posterPath: it.posterPath, customPosterUrl: null, inWatchlist: false, addedDate: todayISO(), watchLog: [] };
+    const next = it.action === "watchlist"
+      ? { ...base, inWatchlist: true }
+      : { ...base, inWatchlist: false, watchLog: [...base.watchLog, { date: null, rating: it.rating ?? null, notes: "" }] };
+    const m = normalizeMovie(next);
+    try {
+      if (!m) throw new Error("invalid");
+      if (cur) await state.adapter.updateMovie(m); else await state.adapter.addMovie(m);
+      state.movies.set(m.tmdbId, m);
+      if (cur) updated++; else added++;
+      if (it.action === "watched") review.push({ id: m.tmdbId, rating: it.rating ?? null });
+    } catch (err) {
+      console.error(err);
+      failed++;
+    }
+  }
+  document.body.classList.remove("busy");
+  render();
+  if (failed) toast(`${failed} movie${failed === 1 ? "" : "s"} couldn't be saved.`, "error");
+  return { added, updated, failed, review };
+}
+
+function startReview(queue) {
+  if (!queue.length) return;
+  state.review = { queue, i: 0 };
+  openDrawer({ id: queue[0].id });
+}
+
+function reviewItem(movie) {
+  const r = state.review;
+  return r && r.queue[r.i]?.id === movie.tmdbId ? r.queue[r.i] : null;
+}
+
+function nextReview() {
+  const r = state.review;
+  r.i++;
+  if (r.i >= r.queue.length) {
+    state.review = null;
+    $("#drawer").close();
+    toast("Review done");
+    return;
+  }
+  state.drawer = { id: r.queue[r.i].id };
+  renderDrawer();
+  $("#drawer").scrollTop = 0;
+}
+
+/** Replaces the undated entry batch add created with the details entered now. */
+async function saveReviewEntry(movie, item, date, rating, notes) {
+  if (date && !isValidDate(date)) { toast("That date isn't valid.", "error"); return; }
+  const cur = state.movies.get(movie.tmdbId);
+  const log = [...cur.watchLog];
+  let idx = -1;
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i];
+    if (e.date === null && e.notes === "" && (e.rating ?? null) === (item.rating ?? null)) { idx = i; break; }
+  }
+  const entry = { date: date || null, rating: rating ?? null, notes: (notes || "").trim() };
+  if (idx >= 0) log[idx] = entry; else log.push(entry);
+  await saveMovie({ ...cur, watchLog: log });
+  nextReview();
+}
+
 // ---------------------------------------------------------------- drawer
 
 function openDrawer(target) {
@@ -441,19 +519,29 @@ function renderDrawer() {
   const n = movie.watchLog.length;
   const logId = `log-${movie.tmdbId}`;
 
-  const rating = ratingInput(`${logId}-rating`);
-  const dateInput = h("input", { type: "date", id: `${logId}-date`, value: todayISO(), max: "2100-12-31" });
+  const rv = inLib ? reviewItem(movie) : null;
+  const rating = ratingInput(`${logId}-rating`, rv ? rv.rating : null);
+  const dateInput = h("input", { type: "date", id: `${logId}-date`, value: rv ? "" : todayISO(), max: "2100-12-31" });
   const noDate = h("button", { type: "button", class: "btn btn-xs btn-ghost", text: "Don't remember", onclick: () => { dateInput.value = ""; dateInput.focus(); } });
   const notes = h("textarea", { id: `${logId}-notes`, rows: 3, maxlength: 2000, placeholder: "Where, with whom, what stuck with you…" });
 
-  const logForm = h("form", { class: "panel log-form", onsubmit: (e) => { e.preventDefault(); logWatch(movie, dateInput.value, rating.value, notes.value); } },
-    h("span", { class: "micro panel-label", text: n ? "Log a rewatch" : "Log a watch" }),
+  const submit = (e) => {
+    e.preventDefault();
+    if (rv) saveReviewEntry(movie, rv, dateInput.value, rating.value, notes.value).catch(() => {});
+    else logWatch(movie, dateInput.value, rating.value, notes.value);
+  };
+  const logForm = h("form", { class: "panel log-form", onsubmit: submit },
+    h("span", { class: "micro panel-label", text: rv ? `Add details · ${state.review.i + 1} of ${state.review.queue.length}` : n ? "Log a rewatch" : "Log a watch" }),
     h("label", { class: "field-label", for: dateInput.id, text: "Date (optional)" }),
     h("div", { class: "date-row" }, dateInput, noDate),
     h("p", { class: "hint", text: "Leave it empty if you don't remember when you watched it." }),
     h("span", { class: "field-label", text: "Rating (optional)" }), rating.el,
     h("label", { class: "field-label", for: notes.id, text: "Notes (optional)" }), notes,
-    h("button", { type: "submit", class: "btn btn-hero btn-block" }, icon("eye"), n ? "Watch again" : "Mark watched"));
+    rv
+      ? h("div", { class: "review-actions" },
+          h("button", { type: "button", class: "btn btn-ghost", text: "Skip", onclick: nextReview }),
+          h("button", { type: "submit", class: "btn btn-hero" }, state.review.i + 1 < state.review.queue.length ? "Save & next →" : "Save & finish"))
+      : h("button", { type: "submit", class: "btn btn-hero btn-block" }, icon("eye"), n ? "Watch again" : "Mark watched"));
 
   const history = h("section", { class: "screen history" },
     h("div", { class: "screen-head" },
@@ -773,6 +861,7 @@ function wireEvents() {
           if (r) openDrawer({ pending: { tmdbId: r.tmdbId, title: r.title, posterPath: r.posterPath, customPosterUrl: null, inWatchlist: false, addedDate: todayISO(), watchLog: [] } });
           break;
         }
+        case "batch": openBatch(); break;
         case "export": exportLibrary(); break;
         case "import": $("#import-file").click(); break;
       }
@@ -792,7 +881,7 @@ function wireEvents() {
   $("#poster-form").addEventListener("submit", (e) => savePoster(e).catch(() => {}));
   $("#poster-reset").addEventListener("click", () => resetPoster().catch(() => {}));
 
-  $("#drawer").addEventListener("close", () => { state.drawer = null; });
+  $("#drawer").addEventListener("close", () => { state.drawer = null; state.review = null; });
 
   // Close dialogs on [data-close] buttons and on backdrop clicks.
   document.querySelectorAll("dialog").forEach((dlg) => {

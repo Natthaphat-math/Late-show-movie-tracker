@@ -62,10 +62,13 @@
 
     <form class="search" role="search" id="search-form" autocomplete="off">
       <label class="micro search-label" for="q">Search TMDB</label>
-      <div class="search-field">
-        <svg class="search-icon" aria-hidden="true"><use href="#i-search"/></svg>
-        <input id="q" name="q" type="search" placeholder="Find a film…" maxlength="120" enterkeyhint="search">
-        <button type="button" class="icon-btn" id="search-clear" aria-label="Clear search" hidden><svg><use href="#i-x"/></svg></button>
+      <div class="search-row">
+        <div class="search-field">
+          <svg class="search-icon" aria-hidden="true"><use href="#i-search"/></svg>
+          <input id="q" name="q" type="search" placeholder="Find a film…" maxlength="120" enterkeyhint="search">
+          <button type="button" class="icon-btn" id="search-clear" aria-label="Clear search" hidden><svg><use href="#i-x"/></svg></button>
+        </div>
+        <button type="button" class="btn btn-sm batch-open" data-action="batch" title="Add several movies at once"><svg aria-hidden="true"><use href="#i-list"/></svg>Batch</button>
       </div>
     </form>
 
@@ -176,6 +179,11 @@
         <button type="submit" class="btn" id="paste-go">Sign in with pasted link</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- Batch add (content rendered by js/batch.js) -->
+  <dialog class="modal panel batch" id="batch-dialog" aria-labelledby="batch-title">
+    <div class="modal-body" id="batch-body"></div>
   </dialog>
 
   <!-- Generic confirm / choice -->

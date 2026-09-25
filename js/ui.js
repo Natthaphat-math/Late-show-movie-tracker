@@ -94,18 +94,18 @@ export function miniMeter(rating) {
  * Interactive meter built on native radio inputs (keyboard + screen-reader friendly).
  * Returns { el, get value() }.
  */
-export function ratingInput(name, initial = null) {
+export function ratingInput(name, initial = null, onChange = null) {
   let value = initial;
   const readout = h("span", { class: "meter-readout" });
   const segs = h("div", { class: "meter meter-input", role: "radiogroup", "aria-label": "Rating, 1 to 10" });
   const radios = [];
   for (let i = 1; i <= 10; i++) {
     const input = h("input", { type: "radio", name, value: i, id: `${name}-${i}`, class: "sr-only" });
-    input.addEventListener("change", () => { value = i; paint(); });
+    input.addEventListener("change", () => { value = i; paint(); onChange?.(value); });
     radios.push(input);
     segs.append(input, h("label", { for: `${name}-${i}`, class: "seg", title: `${i}/10` }, h("span", { class: "sr-only", text: `${i} out of 10` })));
   }
-  const clear = h("button", { type: "button", class: "btn btn-xs btn-ghost", text: "Clear", onclick: () => { value = null; radios.forEach((r) => (r.checked = false)); paint(); } });
+  const clear = h("button", { type: "button", class: "btn btn-xs btn-ghost", text: "Clear", onclick: () => { value = null; radios.forEach((r) => (r.checked = false)); paint(); onChange?.(value); } });
   function paint() {
     segs.querySelectorAll("label.seg").forEach((l, idx) => l.classList.toggle("on", value !== null && idx < value));
     readout.textContent = value ? `${value}/10` : "—/10";
