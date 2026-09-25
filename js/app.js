@@ -314,7 +314,7 @@ function listFor(view) {
     case "title": return list.sort(byTitle);
     case "count": return list.sort((a, b) => b.watchLog.length - a.watchLog.length || byTitle(a, b));
     case "rating": return list.sort((a, b) => latestRating(b) - latestRating(a) || byTitle(a, b));
-    default: return list.sort((a, b) => lastEntry(b).date.localeCompare(lastEntry(a).date) || byTitle(a, b));
+    default: return list.sort((a, b) => (lastEntry(b).date || "").localeCompare(lastEntry(a).date || "") || byTitle(a, b));
   }
 }
 
@@ -391,19 +391,19 @@ function renderStats() {
     ["Films seen", pad(watchedTitles)],
     ["Total watches", pad(entries.length)],
     ["Rewatches", pad(entries.length - watchedTitles)],
-    [`In ${year}`, pad(entries.filter((e) => e.date.startsWith(year)).length)],
+    [`In ${year}`, pad(entries.filter((e) => (e.date || "").startsWith(year)).length)],
     ["Avg rating", avg],
     ["Most rewatched", top ? `${top.title} ×${top.watchLog.length}` : "—", true],
   ]);
 
-  const recent = entries.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
+  const recent = entries.sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 6);
   const recentPanel = h("section", { class: "panel recent" },
     h("span", { class: "micro panel-label", text: "Recent watches" }),
     recent.length
       ? h("ol", { class: "recent-list" }, recent.map((e) =>
           h("li", {},
             h("button", { type: "button", class: "recent-item", dataset: { action: "open", id: e.movie.tmdbId } },
-              h("span", { class: "mono", text: e.date }),
+              h("span", { class: "mono", text: e.date || "—" }),
               h("span", { class: "recent-title", text: e.movie.title }),
               miniMeter(e.rating)))))
       : h("p", { class: "muted", text: "Nothing logged yet." }));
@@ -442,12 +442,15 @@ function renderDrawer() {
   const logId = `log-${movie.tmdbId}`;
 
   const rating = ratingInput(`${logId}-rating`);
-  const dateInput = h("input", { type: "date", id: `${logId}-date`, value: todayISO(), max: "2100-12-31", required: true });
+  const dateInput = h("input", { type: "date", id: `${logId}-date`, value: todayISO(), max: "2100-12-31" });
+  const noDate = h("button", { type: "button", class: "btn btn-xs btn-ghost", text: "Don't remember", onclick: () => { dateInput.value = ""; dateInput.focus(); } });
   const notes = h("textarea", { id: `${logId}-notes`, rows: 3, maxlength: 2000, placeholder: "Where, with whom, what stuck with you…" });
 
   const logForm = h("form", { class: "panel log-form", onsubmit: (e) => { e.preventDefault(); logWatch(movie, dateInput.value, rating.value, notes.value); } },
     h("span", { class: "micro panel-label", text: n ? "Log a rewatch" : "Log a watch" }),
-    h("label", { class: "field-label", for: dateInput.id, text: "Date" }), dateInput,
+    h("label", { class: "field-label", for: dateInput.id, text: "Date (optional)" }),
+    h("div", { class: "date-row" }, dateInput, noDate),
+    h("p", { class: "hint", text: "Leave it empty if you don't remember when you watched it." }),
     h("span", { class: "field-label", text: "Rating (optional)" }), rating.el,
     h("label", { class: "field-label", for: notes.id, text: "Notes (optional)" }), notes,
     h("button", { type: "submit", class: "btn btn-hero btn-block" }, icon("eye"), n ? "Watch again" : "Mark watched"));
@@ -461,10 +464,10 @@ function renderDrawer() {
           const idx = n - 1 - i;
           return h("li", { class: "history-item" },
             h("div", { class: "history-row" },
-              h("span", { class: "mono", text: e.date }),
+              h("span", { class: "mono", text: e.date || "Date unknown" }),
               h("span", { class: "screen-tag", text: idx === 0 ? "First watch" : `Rewatch #${idx}` }),
               miniMeter(e.rating),
-              h("button", { type: "button", class: "icon-btn icon-btn-screen", "aria-label": `Delete watch on ${e.date}`, onclick: () => deleteEntry(movie, idx) }, icon("trash"))),
+              h("button", { type: "button", class: "icon-btn icon-btn-screen", "aria-label": `Delete watch on ${e.date || "unknown date"}`, onclick: () => deleteEntry(movie, idx) }, icon("trash"))),
             e.notes ? h("p", { class: "history-notes", text: e.notes }) : null);
         }))
       : h("p", { class: "screen-empty", text: "No signal yet — log your first watch." }));
@@ -480,7 +483,7 @@ function renderDrawer() {
       h("button", { type: "button", class: "btn btn-sm btn-danger", onclick: () => removeMovie(movie) }, icon("trash"), "Remove from library"));
   }
 
-  body.replaceChildren(
+  body.replaceChildren(...[
     h("div", { class: "drawer-head" },
       h("span", { class: "micro", text: inLib ? "Now showing" : "Not in library yet" }),
       h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: () => $("#drawer").close() }, icon("x"))),
@@ -495,17 +498,17 @@ function renderDrawer() {
         tmdbLink)),
     logForm,
     inLib ? history : null,
-    actions);
+    actions].filter(Boolean));
 }
 
 async function logWatch(movie, date, rating, notes) {
-  if (!isValidDate(date)) { toast("Pick a valid date.", "error"); return; }
+  if (date && !isValidDate(date)) { toast("That date isn't valid.", "error"); return; }
   const isNew = !state.movies.has(movie.tmdbId);
   const base = isNew ? movie : state.movies.get(movie.tmdbId);
   const next = {
     ...base,
     inWatchlist: false,
-    watchLog: [...base.watchLog, { date, rating: rating ?? null, notes: (notes || "").trim() }],
+    watchLog: [...base.watchLog, { date: date || null, rating: rating ?? null, notes: (notes || "").trim() }],
   };
   await saveMovie(next, { isNew });
   if (isNew) state.drawer = { id: movie.tmdbId };
@@ -517,7 +520,7 @@ async function deleteEntry(movie, idx) {
   const cur = state.movies.get(movie.tmdbId);
   const e = cur.watchLog[idx];
   const c = await choose({
-    kicker: "Watch history", title: "Delete this watch?", text: `The entry from ${e.date} will be removed from the history.`,
+    kicker: "Watch history", title: "Delete this watch?", text: e.date ? `The entry from ${e.date} will be removed from the history.` : "This undated entry will be removed from the history.",
     buttons: [{ label: "Cancel", value: "no" }, { label: "Delete", value: "yes", kind: "danger" }],
   });
   if (c !== "yes") return;

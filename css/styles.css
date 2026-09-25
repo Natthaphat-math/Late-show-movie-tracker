@@ -219,6 +219,16 @@ input[type="search"], input[type="url"], input[type="email"], input[type="date"]
   font-size: 15px;
 }
 textarea { resize: vertical; min-height: 72px; }
+/* iOS Safari gives date inputs an intrinsic min-width that overflows narrow containers. */
+input[type="date"] {
+  -webkit-appearance: none; appearance: none;
+  display: block; min-width: 0; max-width: 100%;
+  min-height: 46px; text-align: left;
+}
+input[type="date"]::-webkit-date-and-time-value { text-align: left; }
+.date-row { display: flex; align-items: center; gap: 10px; }
+.date-row input { flex: 1; }
+.date-row .btn { flex: none; }
 input:focus-visible, textarea:focus-visible { outline: none; box-shadow: var(--s1) var(--s1) 0 var(--hero); }
 .field-label { font: 800 13px/1.2 var(--font-head); margin-top: 6px; display: block; }
 .hint { font-size: 13px; color: var(--text-soft); margin-top: 6px; }

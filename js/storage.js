@@ -55,14 +55,19 @@ export function posterUrl(movie, size = "w500") {
 
 function normalizeEntry(e) {
   if (!e || typeof e !== "object") return null;
-  if (!isValidDate(e.date)) return null;
+  // Date is optional (older watches you can't place); anything else must be a real date.
+  let date = null;
+  if (e.date !== null && e.date !== undefined && e.date !== "") {
+    if (!isValidDate(e.date)) return null;
+    date = e.date;
+  }
   let rating = null;
   if (e.rating !== null && e.rating !== undefined && e.rating !== "") {
     const r = Number(e.rating);
     if (Number.isInteger(r) && r >= 1 && r <= 10) rating = r;
   }
   const notes = typeof e.notes === "string" ? e.notes.slice(0, LIMITS.notes) : "";
-  return { date: e.date, rating, notes };
+  return { date, rating, notes };
 }
 
 /** Returns a clean Movie object with exactly the model's fields, or null if unusable. */
@@ -91,7 +96,9 @@ export function normalizeMovie(raw) {
 }
 
 export function sortLog(log) {
-  return log.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  // Undated watches sort first (treated as the oldest); dated ones chronologically.
+  const key = (e) => e.date || "";
+  return log.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
 }
 
 // ---------- import / export / merge ----------
