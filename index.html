@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en" data-theme="matinee">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Late Show — Movie Tracker</title>
+  <meta name="description" content="Track your watchlist, watches and rewatches.">
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self' https://www.gstatic.com;
+    style-src 'self' https://fonts.googleapis.com;
+    font-src https://fonts.gstatic.com;
+    img-src https: data:;
+    connect-src 'self' https://api.themoviedb.org https://*.googleapis.com https://www.gstatic.com;
+    frame-src https://*.firebaseapp.com;
+    object-src 'none';
+    base-uri 'none';
+    form-action 'self'">
+  <meta name="referrer" content="no-referrer">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=Space+Mono:wght@400;700&display=swap">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='7' width='26' height='20' rx='5' fill='%23e4572e' stroke='%231a1a1a' stroke-width='3'/%3E%3Crect x='7' y='11' width='14' height='12' rx='2' fill='%231a1a1a'/%3E%3C/svg%3E">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <!-- Icon sprite -->
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="3"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20l1-5L15.5 4.5a2.1 2.1 0 0 1 3 0l1 1a2.1 2.1 0 0 1 0 3L9 19l-5 1z" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="12" cy="12" r="3" fill="currentColor"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="3.5" cy="6" r="1.8" fill="currentColor"/><circle cx="3.5" cy="12" r="1.8" fill="currentColor"/><circle cx="3.5" cy="18" r="1.8" fill="currentColor"/></symbol>
+    <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M8 2.5l4 3.5 4-3.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 20h16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M4 20h16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/></symbol>
+    <symbol id="i-film" viewBox="0 0 48 48"><rect x="8" y="4" width="32" height="40" rx="4" fill="none" stroke="currentColor" stroke-width="3.5"/><path d="M16 4v40M32 4v40" stroke="currentColor" stroke-width="3.5"/><path d="M8 14h8M8 24h8M8 34h8M32 14h8M32 24h8M32 34h8" stroke="currentColor" stroke-width="3.5"/></symbol>
+  </svg>
+
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="topbar panel">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><svg><use href="#i-tv"/></svg></span>
+      <span class="brand-text">
+        <span class="brand-name">Late Show</span>
+        <span class="micro">Movie console · v1</span>
+      </span>
+    </div>
+
+    <form class="search" role="search" id="search-form" autocomplete="off">
+      <label class="micro search-label" for="q">Search TMDB</label>
+      <div class="search-field">
+        <svg class="search-icon" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="q" name="q" type="search" placeholder="Find a film…" maxlength="120" enterkeyhint="search">
+        <button type="button" class="icon-btn" id="search-clear" aria-label="Clear search" hidden><svg><use href="#i-x"/></svg></button>
+      </div>
+    </form>
+
+    <div class="topbar-right">
+      <div class="themes" role="radiogroup" aria-label="Theme">
+        <span class="micro">Theme</span>
+        <button type="button" class="swatch" role="radio" data-theme-pick="matinee" aria-label="Matinee theme"></button>
+        <button type="button" class="swatch" role="radio" data-theme-pick="arcade" aria-label="Arcade theme"></button>
+        <button type="button" class="swatch" role="radio" data-theme-pick="drivein" aria-label="Drive-in theme"></button>
+      </div>
+      <button type="button" class="owner-btn" id="owner-btn" hidden>
+        <span class="led" aria-hidden="true"></span>
+        <span class="owner-label">Local</span>
+      </button>
+    </div>
+  </header>
+
+  <nav class="rail panel" aria-label="Views">
+    <span class="micro rail-label">Channels</span>
+    <button type="button" class="rail-btn" data-view="watchlist">
+      <svg aria-hidden="true"><use href="#i-list"/></svg><span>Watchlist</span><span class="count" data-count="watchlist">0</span>
+    </button>
+    <button type="button" class="rail-btn" data-view="watched">
+      <svg aria-hidden="true"><use href="#i-eye"/></svg><span>Watched</span><span class="count" data-count="watched">0</span>
+    </button>
+    <button type="button" class="rail-btn" data-view="stats">
+      <svg aria-hidden="true"><use href="#i-tv"/></svg><span>Stats</span>
+    </button>
+    <div class="rail-data">
+      <span class="micro rail-label">Data</span>
+      <button type="button" class="btn btn-sm" data-action="export"><svg aria-hidden="true"><use href="#i-down"/></svg>Export</button>
+      <button type="button" class="btn btn-sm" data-action="import"><svg aria-hidden="true"><use href="#i-up"/></svg>Import</button>
+      <p class="storage-note micro" id="storage-note">Saved in this browser</p>
+    </div>
+  </nav>
+
+  <main id="main" tabindex="-1">
+    <div class="banner" id="banner" hidden></div>
+    <div class="view-head">
+      <div>
+        <span class="micro" id="view-kicker">Channel 01</span>
+        <h1 id="view-title">Watchlist</h1>
+      </div>
+      <div class="segmented" id="sort-control" role="radiogroup" aria-label="Sort" hidden></div>
+    </div>
+    <div id="view" class="view" aria-live="polite"></div>
+  </main>
+
+  <footer class="attribution">
+    <span class="tmdb-mark" aria-hidden="true">TMDB</span>
+    <p>This product uses the TMDB API but is not endorsed or certified by TMDB.
+      Movie data and posters from <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer">The Movie Database (TMDB)</a>.</p>
+  </footer>
+
+  <!-- Movie detail drawer -->
+  <dialog class="drawer panel" id="drawer" aria-labelledby="drawer-title">
+    <div class="drawer-inner" id="drawer-body"></div>
+  </dialog>
+
+  <!-- Poster editor -->
+  <dialog class="modal panel" id="poster-dialog" aria-labelledby="poster-title">
+    <form method="dialog" class="modal-body" id="poster-form">
+      <span class="micro">Poster override</span>
+      <h2 id="poster-title">Edit poster</h2>
+      <p class="modal-sub" id="poster-movie"></p>
+      <div class="poster-editor">
+        <div class="poster-slot poster-slot-lg" id="poster-preview"></div>
+        <div class="poster-editor-fields">
+          <label class="field-label" for="poster-url">Image URL (https)</label>
+          <input id="poster-url" type="url" inputmode="url" placeholder="https://…/poster.jpg" maxlength="2048" spellcheck="false">
+          <p class="hint" id="poster-hint">Paste a direct link to an image. Only the URL is stored.</p>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="poster-reset">Reset to default</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-hero" id="poster-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Owner sign-in -->
+  <dialog class="modal panel" id="signin-dialog" aria-labelledby="signin-title">
+    <form method="dialog" class="modal-body" id="signin-form">
+      <span class="micro">Owner access</span>
+      <h2 id="signin-title">Owner sign-in</h2>
+      <p class="modal-sub">This library is private to its owner. Visitors can use the app freely — everything is saved in your own browser.</p>
+      <label class="field-label" for="signin-email">Owner email</label>
+      <input id="signin-email" type="email" autocomplete="email" required maxlength="254">
+      <p class="hint" id="signin-hint">We'll email a one-time sign-in link. No password.</p>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-hero" id="signin-send">Send link</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Generic confirm / choice -->
+  <dialog class="modal panel" id="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog" class="modal-body">
+      <span class="micro" id="confirm-kicker">Confirm</span>
+      <h2 id="confirm-title"></h2>
+      <p class="modal-sub" id="confirm-text"></p>
+      <div class="modal-actions" id="confirm-actions"></div>
+    </form>
+  </dialog>
+
+  <input type="file" id="import-file" accept="application/json,.json" hidden>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>
