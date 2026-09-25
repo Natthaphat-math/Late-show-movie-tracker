@@ -43,6 +43,21 @@ export async function searchMoviesOnce(query, year = null) {
   return cleanResults(await res.json()).slice(0, 8);
 }
 
+/** Genres, release year and runtime for one movie (used by the stats page). */
+export async function fetchMovieMeta(tmdbId) {
+  if (!token) throw new Error("TMDB token missing.");
+  const res = await fetch(`${API}/movie/${encodeURIComponent(tmdbId)}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+  if (res.status === 404) return { genres: [], releaseYear: null, runtime: null };
+  if (!res.ok) throw new Error(`TMDB details failed (${res.status}).`);
+  const d = await res.json();
+  const year = Number.parseInt(String(d.release_date || "").slice(0, 4), 10);
+  return {
+    genres: (Array.isArray(d.genres) ? d.genres : []).map((g) => g && g.id).filter((id) => Number.isInteger(id) && id > 0),
+    releaseYear: Number.isInteger(year) ? year : null,
+    runtime: Number.isInteger(d.runtime) && d.runtime > 0 ? d.runtime : null,
+  };
+}
+
 function cleanResults(data) {
   return (Array.isArray(data.results) ? data.results : [])
     .filter((r) => Number.isSafeInteger(r.id) && typeof r.title === "string")

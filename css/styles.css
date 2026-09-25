@@ -685,6 +685,52 @@ dialog::backdrop { background: var(--backdrop); }
 .icon-btn-screen { width: 30px; height: 30px; background: transparent; color: var(--phosphor); border-color: var(--screen-line); box-shadow: none; }
 .icon-btn-screen:hover { background: var(--hero); color: var(--on-color); border-color: var(--line); }
 
+/* ---------------------------------------------------------------- taste profile (stats charts)
+   Single-series charts: one hue (hero) for lit cells, surface-2 for unlit, labels in text tokens. */
+
+.taste { margin-top: 44px; }
+.taste-head { margin-bottom: 18px; }
+.taste-head h2 { margin-top: 4px; font-size: clamp(24px, 3vw, 32px); font-weight: 900; font-stretch: 115%; text-transform: uppercase; }
+.taste-pending { margin-bottom: 14px; }
+.taste .banner { margin-bottom: 18px; }
+.taste-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 30px 24px; }
+.taste-panel { padding: 24px 16px 16px; }
+.taste-sub { font-size: 12.5px; color: var(--text-soft); margin-bottom: 12px; }
+
+.bars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.bar-row {
+  display: grid; grid-template-columns: minmax(84px, 118px) minmax(0, 1fr) 34px; align-items: center; gap: 10px;
+  width: 100%; padding: 5px 6px; font-size: 13.5px;
+}
+.bar-row-btn { background: none; border: 0; border-radius: var(--r-sm); text-align: left; color: inherit; }
+.bar-row-btn:hover { background: var(--surface-2); }
+.bar-label { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-value { text-align: right; font-size: 13px; }
+.seg-bar { display: flex; gap: 2px; height: 14px; }
+.seg-bar > span { flex: 1; background: var(--surface-2); border-radius: 2px; }
+.seg-bar > span.on { background: var(--hero); }
+.seg-bar > span.half { opacity: .5; }
+.seg-bar-10 { gap: 3px; }
+
+.columns { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 6px; align-items: end; }
+.col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.col-value { font-size: 11px; min-height: 14px; }
+.col-bar { display: flex; flex-direction: column; gap: 2px; width: 100%; max-width: 22px; }
+.col-bar > span { height: 9px; background: var(--surface-2); border-radius: 2px; }
+.col-bar > span.on { background: var(--hero); }
+.col-label { font-size: 11px; color: var(--text-soft); }
+
+.filter-row { margin-bottom: 18px; }
+.filter-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 12px 7px 14px;
+  background: var(--accent); color: var(--on-color);
+  border: 2px solid var(--line); border-radius: 999px;
+  box-shadow: 2px 2px 0 var(--shadow);
+  font: 800 13px/1 var(--font-head);
+}
+.filter-chip svg { width: 13px; height: 13px; }
+
 /* ---------------------------------------------------------------- batch add */
 
 .batch { width: min(760px, calc(100vw - 32px)); }

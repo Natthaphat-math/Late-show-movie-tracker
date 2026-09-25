@@ -2,9 +2,10 @@
 
 import {
   localStorageAdapter, createFirestoreAdapter, normalizeMovie, posterUrl, todayISO,
-  isValidDate, httpsUrlOrNull, buildExport, parseImport, applyImport, localLibraryCount,
+  isValidDate, httpsUrlOrNull, buildExport, parseImport, applyImport, localLibraryCount, hasMeta,
 } from "./storage.js";
-import { initSearch, searchMovies, isAbort } from "./search.js";
+import { initSearch, searchMovies, isAbort, fetchMovieMeta } from "./search.js";
+import { tasteProfile, genreName } from "./stats.js";
 import {
   h, icon, posterSlot, setSlotImage, libraryCard, searchCard, emptyState, statusLeds,
   miniMeter, ratingInput, crtTv, toast, choose,
@@ -29,6 +30,7 @@ const state = {
   owner: null,  // signed-in owner user
   review: null, // { queue: [{ id, rating }], i } — one-by-one detail pass after batch add
   editing: null, // { id, idx } — watch entry being edited in the drawer
+  genre: null,   // TMDB genre id filtering the Watched grid (set from the Stats page)
   busy: false,
 };
 
@@ -43,7 +45,8 @@ async function boot() {
   } catch {
     showBanner("No js/config.js found — copy js/config.example.js to js/config.js and add your TMDB token. Library features still work.");
   }
-  if (!initSearch(state.config.TMDB_READ_TOKEN)) {
+  tmdbReady = initSearch(state.config.TMDB_READ_TOKEN);
+  if (!tmdbReady) {
     $("#q").placeholder = "Add a TMDB token in js/config.js to search";
   }
   wireEvents();
@@ -76,6 +79,7 @@ function withSyncTracking(adapter) {
   return {
     name: adapter.name,
     tracked: true,
+    get metaBlocked() { return adapter.metaBlocked; },
     getMovies: () => adapter.getMovies(),
     addMovie: (m) => track(adapter.addMovie(m)),
     updateMovie: (m) => track(adapter.updateMovie(m)),
@@ -98,7 +102,46 @@ async function useAdapter(adapter) {
   const list = await adapter.getMovies();
   state.movies = new Map(list.map((m) => [m.tmdbId, m]));
   $("#storage-note").textContent = adapter.name === "firestore" ? "Synced to owner cloud" : "Saved in this browser";
+  metaTried.clear();
   render();
+  backfillMeta();
+}
+
+// ---- genres / year / runtime for the stats page, fetched quietly in the background.
+const metaTried = new Set();
+let backfilling = false;
+let tmdbReady = false;
+
+function metaPending() {
+  return [...state.movies.values()].filter((m) => !hasMeta(m) && !metaTried.has(m.tmdbId)).length;
+}
+
+async function backfillMeta() {
+  if (backfilling || !tmdbReady) return;
+  backfilling = true;
+  try {
+    for (;;) {
+      const todo = [...state.movies.values()].filter((m) => !hasMeta(m) && !metaTried.has(m.tmdbId)).slice(0, 3);
+      if (!todo.length) break;
+      await Promise.all(todo.map(async (m) => {
+        metaTried.add(m.tmdbId);
+        try {
+          const meta = await fetchMovieMeta(m.tmdbId);
+          const cur = state.movies.get(m.tmdbId);
+          if (!cur) return;
+          const next = normalizeMovie({ ...cur, ...meta });
+          await state.adapter.updateMovie(next);
+          state.movies.set(next.tmdbId, next);
+        } catch (err) {
+          console.warn("Couldn't fetch details for", m.tmdbId, err);
+        }
+      }));
+      if (state.view === "stats" && !state.search.query) render({ drawer: false });
+    }
+  } finally {
+    backfilling = false;
+    if (state.view === "stats" && !state.search.query) render({ drawer: false });
+  }
 }
 
 // ---------------------------------------------------------------- owner / Firebase
@@ -289,6 +332,7 @@ async function saveMovie(movie, { isNew = false } = {}) {
   }
   state.movies.set(m.tmdbId, m);
   render();
+  if (!hasMeta(m)) backfillMeta();
   return m;
 }
 
@@ -355,7 +399,8 @@ function listFor(view) {
   }
 }
 
-function render() {
+/** Re-renders the current view. { drawer: false } leaves an open drawer untouched (background updates). */
+function render({ drawer = true } = {}) {
   const inSearch = Boolean(state.search.query);
   const counts = { watchlist: listFor("watchlist").length, watched: listFor("watched").length };
   document.querySelectorAll("[data-count]").forEach((el) => (el.textContent = counts[el.dataset.count]));
@@ -380,7 +425,7 @@ function render() {
     renderSort(sortEl);
     view.replaceChildren(state.view === "stats" ? renderStats() : renderGrid(state.view));
   }
-  if (state.drawer) renderDrawer();
+  if (drawer && state.drawer) renderDrawer();
 }
 
 function renderSort(el) {
@@ -392,7 +437,16 @@ function renderSort(el) {
 }
 
 function renderGrid(view) {
-  const list = listFor(view);
+  let list = listFor(view);
+  let chip = null;
+  if (view === "watched" && state.genre) {
+    list = list.filter((m) => m.genres?.includes(state.genre));
+    chip = h("div", { class: "filter-row" },
+      h("button", { type: "button", class: "filter-chip", "aria-label": `Remove ${genreName(state.genre)} filter`, onclick: () => { state.genre = null; render(); } },
+        `${genreName(state.genre)} · ${list.length}`, icon("x")));
+    if (!list.length) return h("div", {}, chip, emptyState("Nothing here", `No watched films tagged ${genreName(state.genre)}.`));
+    return h("div", {}, chip, h("div", { class: "grid" }, list.map(libraryCard)));
+  }
   if (!list.length) {
     return view === "watchlist"
       ? emptyState("Nothing queued", "Search TMDB above and add films to your watchlist.", focusSearchButton())
@@ -430,6 +484,7 @@ function renderStats() {
     ["Rewatches", pad(entries.length - watchedTitles)],
     [`In ${year}`, pad(entries.filter((e) => (e.date || "").startsWith(year)).length)],
     ["Avg rating", avg],
+    ["Hours watched", formatHours(all)],
     ["Most rewatched", top ? `${top.title} ×${top.watchLog.length}` : "—", true],
   ]);
 
@@ -452,7 +507,28 @@ function renderStats() {
       h("button", { type: "button", class: "btn", dataset: { action: "export" } }, icon("down"), "Export JSON"),
       h("button", { type: "button", class: "btn", dataset: { action: "import" } }, icon("up"), "Import JSON")));
 
-  return h("div", { class: "stats" }, h("div", { class: "stats-hero" }, tv), h("div", { class: "stats-side" }, recentPanel, dataPanel));
+  const taste = tasteProfile(all, {
+    pending: tmdbReady ? metaPending() : 0,
+    blocked: Boolean(state.adapter.metaBlocked),
+    onGenre: (id) => {
+      state.genre = id;
+      state.view = "watched";
+      render();
+      window.scrollTo({ top: 0 });
+    },
+  });
+
+  return h("div", {},
+    h("div", { class: "stats" }, h("div", { class: "stats-hero" }, tv), h("div", { class: "stats-side" }, recentPanel, dataPanel)),
+    taste);
+}
+
+/** Runtime × watches, rewatches included. Films without a runtime yet are left out. */
+function formatHours(movies) {
+  const minutes = movies.reduce((sum, m) => sum + (m.runtime || 0) * m.watchLog.length, 0);
+  if (!minutes) return "—";
+  const hours = minutes / 60;
+  return hours < 10 ? `${hours.toFixed(1)} h` : `${Math.round(hours)} h`;
 }
 
 // ---------------------------------------------------------------- batch add
@@ -485,6 +561,7 @@ async function applyBatch(items) {
   }
   document.body.classList.remove("busy");
   render();
+  backfillMeta();
   if (failed) toast(`${failed} movie${failed === 1 ? "" : "s"} couldn't be saved.`, "error");
   return { added, updated, failed, review };
 }
@@ -892,6 +969,7 @@ function wireEvents() {
 
   document.querySelectorAll(".rail-btn").forEach((b) => b.addEventListener("click", () => {
     state.view = b.dataset.view;
+    state.genre = null;
     if (state.search.query) exitSearch(); else render();
     $("#main").focus({ preventScroll: true });
   }));

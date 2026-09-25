@@ -92,8 +92,26 @@ export function normalizeMovie(raw) {
     inWatchlist: raw.inWatchlist === true,
     addedDate: isValidDate(raw.addedDate) ? raw.addedDate : todayISO(),
     watchLog,
+    ...normalizeMeta(raw),
   };
 }
+
+/**
+ * Optional TMDB facts used by the stats page. null = not fetched yet (the app backfills it).
+ * genres: TMDB genre ids · releaseYear: e.g. 2014 · runtime: minutes.
+ */
+export function normalizeMeta(raw) {
+  const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : null);
+  return {
+    genres: Array.isArray(raw.genres) ? [...new Set(raw.genres.filter((g) => Number.isInteger(g) && g > 0))].slice(0, 12) : null,
+    releaseYear: int(raw.releaseYear, 1870, 2100),
+    runtime: int(raw.runtime, 0, 1000),
+  };
+}
+
+export const META_KEYS = ["genres", "releaseYear", "runtime"];
+
+export const hasMeta = (m) => Array.isArray(m.genres);
 
 export function sortLog(log) {
   // Undated watches sort first (treated as the oldest); dated ones chronologically.
@@ -141,6 +159,9 @@ export function mergeMovie(a, b) {
     inWatchlist: a.inWatchlist || b.inWatchlist,
     addedDate: a.addedDate < b.addedDate ? a.addedDate : b.addedDate,
     watchLog: sortLog(log).slice(0, LIMITS.watchLog),
+    genres: a.genres ?? b.genres ?? null,
+    releaseYear: a.releaseYear ?? b.releaseYear ?? null,
+    runtime: a.runtime ?? b.runtime ?? null,
   };
 }
 
@@ -224,8 +245,16 @@ export function localLibraryCount() {
 export function createFirestoreAdapter(fb, uid) {
   const col = () => fb.collection(fb.db, "users", uid, "movies");
   const ref = (id) => fb.doc(fb.db, "users", uid, "movies", String(id));
+  // Unset meta fields are left out of the document, so older security rules (without the
+  // meta fields) keep accepting every write that doesn't carry any.
+  const toDoc = (m, withMeta) => {
+    const d = { ...m };
+    for (const k of META_KEYS) if (!withMeta || d[k] === null) delete d[k];
+    return d;
+  };
   return {
     name: "firestore",
+    metaBlocked: false, // true once the rules have rejected meta fields: stop sending them
     async getMovies() {
       const snap = await fb.getDocs(col());
       return snap.docs.map((d) => normalizeMovie(d.data())).filter(Boolean);
@@ -233,7 +262,16 @@ export function createFirestoreAdapter(fb, uid) {
     async addMovie(movie) {
       const m = normalizeMovie(movie);
       if (!m) throw new Error("Invalid movie");
-      await fb.setDoc(ref(m.tmdbId), m);
+      const hasAnyMeta = META_KEYS.some((k) => m[k] !== null);
+      if (!hasAnyMeta || this.metaBlocked) return fb.setDoc(ref(m.tmdbId), toDoc(m, false));
+      try {
+        await fb.setDoc(ref(m.tmdbId), toDoc(m, true));
+      } catch (err) {
+        if (err?.code !== "permission-denied") throw err;
+        // Rules predate the stats fields: save without them and remember.
+        this.metaBlocked = true;
+        await fb.setDoc(ref(m.tmdbId), toDoc(m, false));
+      }
     },
     async updateMovie(movie) {
       return this.addMovie(movie);
