@@ -29,7 +29,7 @@ jobs:
     outputs:
       present: ${{ steps.check.outputs.present }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Skip everything until the app files have been added to the repo.
       - id: check
