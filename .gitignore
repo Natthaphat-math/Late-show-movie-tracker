@@ -1,0 +1,10 @@
+# Private config — generated from GitHub Secrets at deploy time, never committed
+js/config.js
+
+# Firebase CLI local state
+.firebase/
+.firebaserc
+firebase-debug.log
+
+# Build output
+_site/

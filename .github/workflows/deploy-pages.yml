@@ -1,0 +1,117 @@
+name: Deploy to GitHub Pages
+
+# Builds the static site and writes js/config.js from repository Secrets at deploy
+# time, so the TMDB token, owner email and Firebase config never enter the repo.
+#
+# Required secrets (Settings → Secrets and variables → Actions → New repository secret):
+#   TMDB_READ_TOKEN   TMDB v4 API Read Access Token
+#   OWNER_EMAIL       your owner email (lowercase)
+#   FIREBASE_CONFIG   the firebaseConfig object from the Firebase console (JSON or pasted JS object)
+#                     — optional: leave unset for local-only mode
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.check.outputs.present }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Skip everything until the app files have been added to the repo.
+      - id: check
+        run: |
+          if [ -f index.html ]; then echo "present=true" >> "$GITHUB_OUTPUT"
+          else echo "present=false" >> "$GITHUB_OUTPUT"; echo "::notice::index.html not found yet, skipping deploy."; fi
+
+      - name: Assemble site
+        if: steps.check.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p _site/js
+          cp index.html _site/
+          cp -r css _site/
+          # Copy JS modules, but never the template or any local config.
+          find js -maxdepth 1 -name '*.js' ! -name 'config.example.js' ! -name 'config.js' -exec cp {} _site/js/ \;
+
+      - name: Write js/config.js from secrets
+        if: steps.check.outputs.present == 'true'
+        env:
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          FIREBASE_CONFIG: ${{ secrets.FIREBASE_CONFIG }}
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+          const fail = (msg) => { console.error(`::error::${msg}`); process.exit(1); };
+
+          const token = (process.env.TMDB_READ_TOKEN || "").trim();
+          const email = (process.env.OWNER_EMAIL || "").trim().toLowerCase();
+          if (!token) fail("Secret TMDB_READ_TOKEN is missing.");
+          if (!email || !email.includes("@")) fail("Secret OWNER_EMAIL is missing or not an email.");
+
+          // Accept strict JSON or the JS object Firebase shows ("const firebaseConfig = { apiKey: ... };").
+          let firebase = null;
+          const raw = (process.env.FIREBASE_CONFIG || "").trim();
+          if (raw) {
+            let src = raw.replace(/^[^{]*/, "").replace(/;?\s*$/, "");
+            src = src
+              .replace(/^\s*\/\/.*$/gm, "")                       // whole-line comments (keeps https://)
+              .replace(/'/g, '"')                                 // single → double quotes
+              .replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":') // quote bare keys
+              .replace(/,\s*}/g, "}");                            // trailing comma
+            try { firebase = JSON.parse(src); } catch { fail("Secret FIREBASE_CONFIG isn't a valid config object."); }
+            for (const k of ["apiKey", "authDomain", "projectId", "appId"]) {
+              if (typeof firebase[k] !== "string" || !firebase[k]) fail(`FIREBASE_CONFIG is missing "${k}".`);
+            }
+            const allowed = ["apiKey", "authDomain", "projectId", "storageBucket", "messagingSenderId", "appId", "measurementId"];
+            firebase = Object.fromEntries(Object.entries(firebase).filter(([k, v]) => allowed.includes(k) && typeof v === "string"));
+          }
+
+          const out =
+            `// Generated at deploy time from repository secrets. Do not commit.\n` +
+            `export const TMDB_READ_TOKEN = ${JSON.stringify(token)};\n` +
+            `export const OWNER_EMAIL = ${JSON.stringify(email)};\n` +
+            `export const FIREBASE_CONFIG = ${JSON.stringify(firebase, null, 2)};\n`;
+          fs.writeFileSync("_site/js/config.js", out);
+          console.log(`config.js written (firebase: ${firebase ? "on" : "off"}).`);
+          EOF
+
+      - name: Check site
+        if: steps.check.outputs.present == 'true'
+        run: |
+          test -f _site/index.html
+          test -f _site/css/styles.css
+          test -f _site/js/app.js || { echo "::error::js/app.js not found — copy the app files into the repo root first."; exit 1; }
+          ls -R _site
+
+      - if: steps.check.outputs.present == 'true'
+        uses: actions/configure-pages@v5
+      - if: steps.check.outputs.present == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
