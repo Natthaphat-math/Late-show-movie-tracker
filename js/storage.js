@@ -144,7 +144,26 @@ export function normalizeMovie(raw) {
     addedDate: isValidDate(raw.addedDate) ? raw.addedDate : todayISO(),
     watchLog,
     ...meta,
+    // TV progress (empty / defaults for everything else)
+    progress: mediaType === "tv" ? normalizeProgress(raw.progress) : {},
+    cycle: mediaType === "tv" && Number.isInteger(raw.cycle) && raw.cycle >= 1 && raw.cycle <= 99 ? raw.cycle : 1,
+    lastWatched: isValidDate(raw.lastWatched) ? raw.lastWatched : null,
   };
+}
+
+/**
+ * Watched episodes per season: { "1": "1101", "2": "1" } — character i is episode i+1
+ * ("1" watched). Trailing zeros are trimmed; empty seasons are dropped.
+ */
+export function normalizeProgress(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [k, v] of Object.entries(raw).slice(0, 100)) {
+    if (!/^\d{1,3}$/.test(k) || typeof v !== "string" || !/^[01]{1,2000}$/.test(v)) continue;
+    const trimmed = v.replace(/0+$/, "");
+    if (trimmed) out[String(Number(k))] = trimmed;
+  }
+  return out;
 }
 
 /**
@@ -153,16 +172,30 @@ export function normalizeMovie(raw) {
  */
 export function normalizeMeta(raw) {
   const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : null);
+  const date = (v) => (isValidDate(v) ? v : null);
   return {
     genres: Array.isArray(raw.genres) ? [...new Set(raw.genres.filter((g) => Number.isInteger(g) && g > 0))].slice(0, 12) : null,
     releaseYear: int(raw.releaseYear, 1870, 2100),
-    runtime: int(raw.runtime, 0, 1000),
+    runtime: int(raw.runtime, 0, 1000),          // movies: length · TV: typical episode length
+    releaseDate: date(raw.releaseDate),           // movies: release in your region · TV: first air date
+    // TV only
+    tvStatus: ["returning", "ended", "planned"].includes(raw.tvStatus) ? raw.tvStatus : null,
+    nextAirDate: date(raw.nextAirDate),
+    nextAirSeason: int(raw.nextAirSeason, 0, 999),
+    nextAirEpisode: int(raw.nextAirEpisode, 0, 9999),
+    seasons: Array.isArray(raw.seasons)
+      ? raw.seasons
+          .map((x) => x && typeof x === "object" ? { n: int(x.n, 0, 999), c: int(x.c, 0, 2000), d: date(x.d) } : null)
+          .filter((x) => x && x.n !== null && x.c !== null)
+          .slice(0, 100)
+      : null,
+    metaDate: date(raw.metaDate),                 // when the facts above were last fetched
   };
 }
 
-export const META_KEYS = ["genres", "releaseYear", "runtime"];
+export const META_KEYS = ["genres", "releaseYear", "runtime", "releaseDate", "tvStatus", "nextAirDate", "nextAirSeason", "nextAirEpisode", "seasons", "metaDate"];
 
-export const hasMeta = (m) => Array.isArray(m.genres);
+export const hasMeta = (m) => Array.isArray(m.genres) && (m.mediaType !== "tv" || Array.isArray(m.seasons));
 
 export function sortLog(log) {
   // Undated watches sort first (treated as the oldest); dated ones chronologically.
@@ -235,7 +268,20 @@ export function mergeMovie(a, b) {
     genres: a.genres ?? b.genres ?? null,
     releaseYear: a.releaseYear ?? b.releaseYear ?? null,
     runtime: a.runtime ?? b.runtime ?? null,
+    progress: mergeProgress(a.progress || {}, b.progress || {}),
+    lastWatched: [a.lastWatched, b.lastWatched].filter(Boolean).sort().pop() || null,
   };
+}
+
+function mergeProgress(a, b) {
+  const out = { ...a };
+  for (const [k, v] of Object.entries(b)) {
+    const x = out[k] || "";
+    let merged = "";
+    for (let i = 0; i < Math.max(x.length, v.length); i++) merged += x[i] === "1" || v[i] === "1" ? "1" : "0";
+    out[k] = merged;
+  }
+  return out;
 }
 
 function mergeList(a, b) {
@@ -361,6 +407,9 @@ export function createFirestoreAdapter(fb, uid) {
     if (d.mediaType === "movie") delete d.mediaType;
     if (d.tmdbId === null) delete d.tmdbId;
     if (d.emoji === null) delete d.emoji;
+    if (!Object.keys(d.progress || {}).length) delete d.progress;
+    if (d.cycle === 1) delete d.cycle;
+    if (d.lastWatched === null) delete d.lastWatched;
     for (const k of META_KEYS) if (!withMeta || d[k] === null) delete d[k];
     return d;
   };

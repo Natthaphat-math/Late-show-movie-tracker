@@ -3,6 +3,7 @@
 // localStorage or imported files can never inject markup.
 
 import { posterUrl } from "./storage.js";
+import { tvState, totals } from "./tv.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -74,6 +75,16 @@ export function statusLeds(movie) {
   const n = movie.watchLog.length;
   const wrap = h("div", { class: "status" });
   const leds = h("span", { class: "leds", "aria-hidden": "true" });
+  if (movie.mediaType === "tv") {
+    const st = tvState(movie);
+    if (st === "watching" || st === "caughtup" || st === "finished") {
+      const { aired, watched } = totals(movie);
+      const label = st === "watching" ? `Watching ${watched}/${aired}` : st === "caughtup" ? "Caught up" : movie.cycle > 1 ? `Finished ×${movie.cycle}` : "Finished";
+      leds.append(h("span", { class: `led ${st === "watching" ? "led-hollow led-half" : "led-on"}` }));
+      wrap.append(leds, h("span", { class: "micro status-text", text: label }));
+      return wrap;
+    }
+  }
   if (n === 0 && !movie.inWatchlist) {
     wrap.append(h("span", { class: "micro status-text", text: "Saved" }));
   } else if (n === 0) {
@@ -131,14 +142,22 @@ export function kindBadge(mediaType) {
   return null;
 }
 
-export function libraryCard(movie, { rank = null } = {}) {
+/**
+ * opts.rank: number badge (ranked lists) · opts.badge: corner tag text ("in 12 days", "NEW")
+ * · opts.caption: extra line under the title ("Up next S2 · E5").
+ */
+export function libraryCard(movie, { rank = null, badge = null, caption = null } = {}) {
   const card = h("article", { class: "card", dataset: { id: movie.id } });
   const open = h("button", { type: "button", class: "card-open", dataset: { action: "open", id: movie.id }, "aria-label": `Open ${movie.title}` });
   card.append(
     posterSlot(posterUrl(movie), { alt: "", emoji: movie.emoji }),
     kindBadge(movie.mediaType) || "",
     rank ? h("span", { class: "rank-badge mono", text: String(rank) }) : "",
-    h("div", { class: "card-meta" }, h("h3", { class: "card-title", text: movie.title }), statusLeds(movie)),
+    badge ? h("span", { class: "date-badge mono", text: badge }) : "",
+    h("div", { class: "card-meta" },
+      h("h3", { class: "card-title", text: movie.title }),
+      caption ? h("span", { class: "card-caption mono", text: caption }) : null,
+      statusLeds(movie)),
     open,
   );
   return card;

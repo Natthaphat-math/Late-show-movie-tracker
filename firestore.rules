@@ -30,7 +30,9 @@ service cloud.firestore {
       let d = request.resource.data;
       let type = d.get('mediaType', 'movie');
       return d.keys().hasOnly(['tmdbId', 'mediaType', 'title', 'posterPath', 'customPosterUrl', 'emoji',
-                               'inWatchlist', 'addedDate', 'watchLog', 'genres', 'releaseYear', 'runtime'])
+                               'inWatchlist', 'addedDate', 'watchLog', 'genres', 'releaseYear', 'runtime',
+                               'releaseDate', 'metaDate', 'lastWatched',
+                               'tvStatus', 'nextAirDate', 'nextAirSeason', 'nextAirEpisode', 'seasons', 'progress', 'cycle'])
         && d.keys().hasAll(['title', 'posterPath', 'customPosterUrl', 'inWatchlist', 'addedDate', 'watchLog'])
         && ((type == 'movie' && d.tmdbId is int && d.tmdbId > 0 && movieId == string(d.tmdbId))
             || (type == 'tv' && d.tmdbId is int && d.tmdbId > 0 && movieId == 'tv-' + string(d.tmdbId))
@@ -50,7 +52,21 @@ service cloud.firestore {
         && (!('releaseYear' in d) || d.releaseYear == null
             || (d.releaseYear is int && d.releaseYear >= 1870 && d.releaseYear <= 2100))
         && (!('runtime' in d) || d.runtime == null
-            || (d.runtime is int && d.runtime >= 0 && d.runtime <= 1000));
+            || (d.runtime is int && d.runtime >= 0 && d.runtime <= 1000))
+        && optDate(d, 'releaseDate') && optDate(d, 'metaDate') && optDate(d, 'lastWatched')
+        // TV fields: only on TV documents
+        && (type == 'tv' || !d.keys().hasAny(['tvStatus', 'nextAirDate', 'nextAirSeason', 'nextAirEpisode', 'seasons', 'progress', 'cycle']))
+        && (!('tvStatus' in d) || d.tvStatus == null || d.tvStatus in ['returning', 'ended', 'planned'])
+        && optDate(d, 'nextAirDate')
+        && (!('nextAirSeason' in d) || d.nextAirSeason == null || (d.nextAirSeason is int && d.nextAirSeason >= 0 && d.nextAirSeason <= 999))
+        && (!('nextAirEpisode' in d) || d.nextAirEpisode == null || (d.nextAirEpisode is int && d.nextAirEpisode >= 0 && d.nextAirEpisode <= 9999))
+        && (!('seasons' in d) || d.seasons == null || (d.seasons is list && d.seasons.size() <= 100))
+        && (!('progress' in d) || (d.progress is map && d.progress.size() <= 100))
+        && (!('cycle' in d) || (d.cycle is int && d.cycle >= 1 && d.cycle <= 99));
+    }
+
+    function optDate(d, key) {
+      return !(key in d) || d[key] == null || isDate(d[key]);
     }
 
     // Mirrors normalizeList() in js/storage.js. Items are movie ids, in order.

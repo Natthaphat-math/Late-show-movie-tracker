@@ -7,7 +7,11 @@ import {
 } from "./storage.js";
 import { listShelf, listDetail } from "./lists.js";
 import { listForm, listPicker, customForm } from "./sheets.js";
-import { initSearch, searchMovies, isAbort, fetchMovieMeta } from "./search.js";
+import { initSearch, searchMovies, isAbort, fetchMovieMeta, fetchSeason, userRegion } from "./search.js";
+import {
+  seasonsOf, isWatched, isAired, airedIn, watchedIn, episodesWatched, totals, upNext, tvState, epLabel,
+  setEpisode, setSeason, setAllAired, startRewatch,
+} from "./tv.js";
 import { tasteProfile, genreName } from "./stats.js";
 import {
   h, icon, posterSlot, setSlotImage, libraryCard, searchCard, emptyState, statusLeds,
@@ -123,6 +127,26 @@ const metaTried = new Set();
 let backfilling = false;
 let tmdbReady = false;
 
+/**
+ * Fetch (or re-fetch) TMDB facts when they're missing, or once a day for things that change:
+ * shows still airing, upcoming/just-released movies, and entries never fetched with dates.
+ */
+function needsMeta(m) {
+  if (m.mediaType === "custom") return false;
+  if (!hasMeta(m)) return true;
+  const today = todayISO();
+  if (m.metaDate === today) return false;
+  if (!m.metaDate) return true; // fetched before release dates were stored
+  if (m.mediaType === "tv") return m.tvStatus !== "ended";
+  return Boolean(m.releaseDate && m.releaseDate >= addDays(today, -7)) || (m.inWatchlist && !m.releaseDate);
+}
+
+function addDays(iso, n) {
+  const d = new Date(`${iso}T12:00:00`);
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function metaPending() {
   return [...state.movies.values()].filter((m) => !hasMeta(m) && !metaTried.has(m.id)).length;
 }
@@ -132,7 +156,7 @@ async function backfillMeta() {
   backfilling = true;
   try {
     for (;;) {
-      const todo = [...state.movies.values()].filter((m) => !hasMeta(m) && !metaTried.has(m.id)).slice(0, 3);
+      const todo = [...state.movies.values()].filter((m) => needsMeta(m) && !metaTried.has(m.id)).slice(0, 3);
       if (!todo.length) break;
       await Promise.all(todo.map(async (m) => {
         metaTried.add(m.id);
@@ -143,15 +167,17 @@ async function backfillMeta() {
           const next = normalizeMovie({ ...cur, ...meta });
           await state.adapter.updateMovie(next);
           state.movies.set(next.id, next);
+          // A TV drawer waiting for its season list can draw it now.
+          if (state.drawer?.id === next.id && next.mediaType === "tv" && !state.editing) renderDrawer();
         } catch (err) {
           console.warn("Couldn't fetch details for", m.id, err);
         }
       }));
-      if (state.view === "stats" && !state.search.query) render({ drawer: false });
+      if (!state.search.query) render({ drawer: false });
     }
   } finally {
     backfilling = false;
-    if (state.view === "stats" && !state.search.query) render({ drawer: false });
+    if (!state.search.query) render({ drawer: false });
   }
 }
 
@@ -406,21 +432,105 @@ function latestRating(m) {
   return 0;
 }
 
+/** Last time anything was logged: a dated watch or an episode. */
+function lastActivity(m) {
+  return [m.lastWatched, ...m.watchLog.map((e) => e.date)].filter(Boolean).sort().pop() || "";
+}
+
+/**
+ * The Watchlist, in three sections:
+ *   upNext — shows you're partway through (whether or not they're on the watchlist)
+ *   soon   — watchlist titles not out yet, and caught-up shows with a next episode date
+ *   out    — everything else on the watchlist
+ */
+function watchlistSections() {
+  const today = todayISO();
+  const upNextList = [], soon = [], out = [];
+  for (const m of state.movies.values()) {
+    if (m.mediaType === "tv") {
+      const st = tvState(m, today);
+      if (st === "watching") { upNextList.push(m); continue; }
+      if (st === "caughtup" && m.nextAirDate && m.nextAirDate >= today) { soon.push(m); continue; }
+      if (!m.inWatchlist || st === "caughtup" || st === "finished") continue;
+      if ((m.releaseDate && m.releaseDate > today) || (m.tvStatus === "planned" && !m.releaseDate)) { soon.push(m); continue; }
+      out.push(m);
+      continue;
+    }
+    if (!m.inWatchlist) continue;
+    if (m.releaseDate && m.releaseDate > today) soon.push(m); else out.push(m);
+  }
+  const byTitle = (a, b) => a.title.localeCompare(b.title);
+  const soonDate = (m) => (m.mediaType === "tv" && tvState(m) === "caughtup" ? m.nextAirDate : m.releaseDate) || "9999";
+  upNextList.sort((a, b) => lastActivity(b).localeCompare(lastActivity(a)) || byTitle(a, b));
+  soon.sort((a, b) => soonDate(a).localeCompare(soonDate(b)) || byTitle(a, b));
+  if (state.sort.watchlist === "title") out.sort(byTitle);
+  else out.sort((a, b) => b.addedDate.localeCompare(a.addedDate) || byTitle(a, b));
+  return { upNext: upNextList, soon, out, soonDate };
+}
+
 function listFor(view) {
   const all = [...state.movies.values()];
   const byTitle = (a, b) => a.title.localeCompare(b.title);
   if (view === "watchlist") {
-    const list = all.filter((m) => m.inWatchlist);
-    return state.sort.watchlist === "title" ? list.sort(byTitle)
-      : list.sort((a, b) => b.addedDate.localeCompare(a.addedDate) || byTitle(a, b));
+    const { upNext: u, soon, out } = watchlistSections();
+    return [...u, ...soon, ...out];
   }
-  const list = all.filter((m) => m.watchLog.length > 0);
+  const list = all.filter((m) => m.watchLog.length > 0 || episodesWatched(m) > 0);
   switch (state.sort.watched) {
     case "title": return list.sort(byTitle);
     case "count": return list.sort((a, b) => b.watchLog.length - a.watchLog.length || byTitle(a, b));
     case "rating": return list.sort((a, b) => latestRating(b) - latestRating(a) || byTitle(a, b));
-    default: return list.sort((a, b) => (lastEntry(b).date || "").localeCompare(lastEntry(a).date || "") || byTitle(a, b));
+    default: return list.sort((a, b) => lastActivity(b).localeCompare(lastActivity(a)) || byTitle(a, b));
   }
+}
+
+/** "Today", "Tomorrow", "Fri", "in 12 days", "Mar 2027" — or "TBA". */
+function whenLabel(iso) {
+  if (!iso) return "TBA";
+  const today = todayISO();
+  const days = Math.round((new Date(`${iso}T12:00:00`) - new Date(`${today}T12:00:00`)) / 86400000);
+  if (days <= 0) return "Today";
+  if (days === 1) return "Tomorrow";
+  if (days < 7) return new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { weekday: "short" });
+  if (days < 60) return `in ${days} days`;
+  return new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { month: "short", year: "numeric" });
+}
+
+function isNew(iso) {
+  const today = todayISO();
+  return Boolean(iso && iso <= today && iso >= addDays(today, -7));
+}
+
+/** Card with a "+1" button for the next episode of a show you're watching. */
+function upNextCard(m) {
+  const nx = upNext(m);
+  const card = libraryCard(m, { caption: nx ? `Next ${epLabel(nx.season, nx.ep)}` : null });
+  if (nx) {
+    card.append(h("div", { class: "card-tools" },
+      h("button", { type: "button", class: "btn btn-xs btn-hero", dataset: { action: "ep-plus", id: m.id }, "aria-label": `Mark ${m.title} ${epLabel(nx.season, nx.ep)} watched` }, icon("plus"), `E${nx.ep}`)));
+  }
+  return card;
+}
+
+function renderWatchlist() {
+  const { upNext: u, soon, out, soonDate } = watchlistSections();
+  if (!u.length && !soon.length && !out.length) {
+    return emptyState("Nothing queued", "Search above and add films or shows to your watchlist.", focusSearchButton());
+  }
+  const section = (title, sub, cards) => h("section", { class: "wl-section" },
+    h("div", { class: "wl-head" }, h("h2", { class: "wl-title", text: title }), sub ? h("span", { class: "micro", text: sub }) : null),
+    h("div", { class: "grid" }, cards));
+  return h("div", {},
+    u.length ? section("Up next", `${u.length} show${u.length === 1 ? "" : "s"} in progress`, u.map(upNextCard)) : null,
+    soon.length ? section("Coming soon", null, soon.map((m) => {
+      const caughtUp = m.mediaType === "tv" && tvState(m) === "caughtup";
+      return libraryCard(m, {
+        badge: whenLabel(soonDate(m) === "9999" ? null : soonDate(m)),
+        caption: caughtUp && m.nextAirSeason ? `New ${epLabel(m.nextAirSeason, m.nextAirEpisode)}` : null,
+      });
+    })) : null,
+    out.length ? section(soon.length || u.length ? "Out now" : "Watchlist", null,
+      out.map((m) => libraryCard(m, { badge: m.mediaType !== "tv" && isNew(m.releaseDate) ? "NEW" : null }))) : null);
 }
 
 /** Re-renders the current view. { drawer: false } leaves an open drawer untouched (background updates). */
@@ -473,14 +583,11 @@ function renderGrid(view) {
       h("button", { type: "button", class: "filter-chip", "aria-label": `Remove ${genreName(state.genre)} filter`, onclick: () => { state.genre = null; render(); } },
         `${genreName(state.genre)} · ${list.length}`, icon("x")));
     if (!list.length) return h("div", {}, chip, emptyState("Nothing here", `No watched films tagged ${genreName(state.genre)}.`));
-    return h("div", {}, chip, h("div", { class: "grid" }, list.map(libraryCard)));
+    return h("div", {}, chip, h("div", { class: "grid" }, list.map((m) => libraryCard(m))));
   }
-  if (!list.length) {
-    return view === "watchlist"
-      ? emptyState("Nothing queued", "Search TMDB above and add films to your watchlist.", focusSearchButton())
-      : emptyState("No watches logged", "Mark a watchlist film as watched, or log one straight from search.", focusSearchButton());
-  }
-  return h("div", { class: "grid" }, list.map(libraryCard));
+  if (view === "watchlist") return renderWatchlist();
+  if (!list.length) return emptyState("No watches logged", "Mark a watchlist title as watched, or log one straight from search.", focusSearchButton());
+  return h("div", { class: "grid" }, list.map((m) => libraryCard(m)));
 }
 
 function focusSearchButton() {
@@ -501,22 +608,28 @@ function renderSearch() {
 function renderStats() {
   const all = [...state.movies.values()];
   const entries = all.flatMap((m) => m.watchLog.map((e) => ({ ...e, movie: m })));
-  const watchedTitles = all.filter((m) => m.watchLog.length).length;
+  const watchedTitles = all.filter((m) => m.watchLog.length || episodesWatched(m)).length;
+  const episodes = all.reduce((sum, m) => sum + episodesWatched(m), 0);
   const year = todayISO().slice(0, 4);
   const rated = entries.filter((e) => e.rating);
   const avg = rated.length ? (rated.reduce((s, e) => s + e.rating, 0) / rated.length).toFixed(1) : "—";
-  const top = all.filter((m) => m.watchLog.length > 1).sort((a, b) => b.watchLog.length - a.watchLog.length)[0];
+  // A film's repeat watches, or a show's extra watch-throughs, count as rewatches.
+  // (Finished seasons are a show's history entries, not rewatches.)
+  const timesWatched = (m) => (m.mediaType === "tv" ? (m.watchLog.length || episodesWatched(m) ? m.cycle || 1 : 0) : m.watchLog.length);
+  const rewatches = all.reduce((sum, m) => sum + Math.max(0, timesWatched(m) - 1), 0);
+  const top = all.filter((m) => timesWatched(m) > 1).sort((a, b) => timesWatched(b) - timesWatched(a))[0];
   const pad = (n) => String(n).padStart(2, "0");
 
   const tv = crtTv([
     ["Watchlist", pad(all.filter((m) => m.inWatchlist).length)],
-    ["Films seen", pad(watchedTitles)],
+    ["Titles seen", pad(watchedTitles)],
     ["Total watches", pad(entries.length)],
-    ["Rewatches", pad(entries.length - watchedTitles)],
+    ["Rewatches", pad(rewatches)],
     [`In ${year}`, pad(entries.filter((e) => (e.date || "").startsWith(year)).length)],
     ["Avg rating", avg],
     ["Hours watched", formatHours(all)],
-    ["Most rewatched", top ? `${top.title} ×${top.watchLog.length}` : "—", true],
+    ["Episodes", pad(episodes)],
+    ["Most rewatched", top ? `${top.title} ×${timesWatched(top)}` : "—", true],
   ]);
 
   const recent = entries.sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 6);
@@ -534,6 +647,7 @@ function renderStats() {
   const dataPanel = h("section", { class: "panel data-panel" },
     h("span", { class: "micro panel-label", text: "Library data" }),
     h("p", { class: "muted", text: state.adapter.name === "firestore" ? "Owner mode: synced to Firestore." : "Local mode: saved only in this browser. Export regularly to keep a backup." }),
+    h("p", { class: "muted", text: `Release dates for region: ${userRegion() || "worldwide (couldn't detect)"}` }),
     h("div", { class: "row" },
       h("button", { type: "button", class: "btn", dataset: { action: "export" } }, icon("down"), "Export JSON"),
       h("button", { type: "button", class: "btn", dataset: { action: "import" } }, icon("up"), "Import JSON")));
@@ -554,9 +668,23 @@ function renderStats() {
     taste);
 }
 
-/** Runtime × watches, rewatches included. Films without a runtime yet are left out. */
+/**
+ * Movies: runtime × watches. TV: episode length × episodes watched, plus whole seasons
+ * finished on earlier watch-throughs. Titles without a runtime yet are left out.
+ */
 function formatHours(movies) {
-  const minutes = movies.reduce((sum, m) => sum + (m.runtime || 0) * m.watchLog.length, 0);
+  const minutes = movies.reduce((sum, m) => {
+    if (!m.runtime) return sum;
+    if (m.mediaType !== "tv") return sum + m.runtime * m.watchLog.length;
+    let eps = episodesWatched(m);
+    for (const e of m.watchLog) {
+      const x = /^Season (\d+)(?: · rewatch (\d+))?/.exec(e.notes || "");
+      if (!x) continue;
+      const cycle = x[2] ? Number(x[2]) + 1 : 1;
+      if (cycle < (m.cycle || 1)) eps += (m.seasons || []).find((s) => s.n === Number(x[1]))?.c || 0;
+    }
+    return sum + m.runtime * eps;
+  }, 0);
   if (!minutes) return "—";
   const hours = minutes / 60;
   return hours < 10 ? `${hours.toFixed(1)} h` : `${Math.round(hours)} h`;
@@ -579,16 +707,27 @@ async function applyBatch(items, target = {}) {
       releaseYear: it.mediaType === "custom" && /^\d{4}$/.test(it.year || "") ? Number(it.year) : null,
       customPosterUrl: null, inWatchlist: false, addedDate: todayISO(), watchLog: [],
     };
-    const next = it.action === "watchlist"
+    let next = it.action === "watchlist"
       ? { ...base, inWatchlist: true }
       : { ...base, inWatchlist: false, watchLog: [...base.watchLog, { date: null, rating: it.rating ?? null, notes: "" }] };
+    let tvDone = false;
+    if (it.action === "watched" && it.mediaType === "tv") {
+      // "Watched" for a show = every aired episode, with each finished season in its history.
+      try {
+        const withMeta = normalizeMovie({ ...base, ...(Array.isArray(base.seasons) ? {} : await fetchMovieMeta(base)) });
+        next = setAllAired({ ...withMeta, inWatchlist: false }, it.rating ?? null);
+        tvDone = true;
+      } catch (err) {
+        console.warn("Couldn't load seasons for", it.id, err);
+      }
+    }
     const m = normalizeMovie(next);
     try {
       if (!m) throw new Error("invalid");
       if (cur) await state.adapter.updateMovie(m); else await state.adapter.addMovie(m);
       state.movies.set(m.id, m);
       if (cur) updated++; else added++;
-      if (it.action === "watched") review.push({ id: m.id, rating: it.rating ?? null });
+      if (it.action === "watched" && !tvDone) review.push({ id: m.id, rating: it.rating ?? null });
     } catch (err) {
       console.error(err);
       failed++;
@@ -718,7 +857,7 @@ function renderDrawer() {
           return h("li", { class: `history-item${state.editing?.id === movie.id && state.editing.idx === idx ? " is-editing" : ""}` },
             h("div", { class: "history-row" },
               h("span", { class: "mono", text: e.date || "Date unknown" }),
-              h("span", { class: "screen-tag", text: idx === 0 ? "First watch" : `Rewatch #${idx}` }),
+              movie.mediaType === "tv" ? null : h("span", { class: "screen-tag", text: idx === 0 ? "First watch" : `Rewatch #${idx}` }),
               miniMeter(e.rating),
               h("span", { class: "history-btns" },
                 h("button", { type: "button", class: "icon-btn icon-btn-screen", "aria-label": `Edit watch on ${when}`, title: "Edit", onclick: () => startEditEntry(movie, idx) }, icon("pencil")),
@@ -753,7 +892,7 @@ function renderDrawer() {
         inLib ? statusLeds(movie) : null,
         inLib ? h("span", { class: "micro", text: `Added ${movie.addedDate}` }) : null,
         tmdbLink)),
-    logForm,
+    movie.mediaType === "tv" && !ed ? tvPanel(movie) : logForm,
     inLib ? history : null,
     listsSection(movie),
     actions].filter(Boolean));
@@ -821,6 +960,147 @@ async function removeMovie(movie) {
   await deleteMovie(movie.id);
   if ($("#drawer").open) $("#drawer").close();
   toast("Removed");
+}
+
+// ---------------------------------------------------------------- TV episodes
+
+const seasonCache = new Map(); // `${tmdbId}:${season}` → [{ e, name, airDate }]
+let openSeason = null;         // `${id}:${season}` expanded in the drawer
+
+/** Saves a TV change from the drawer or a card. Works for shows not yet in the library. */
+async function tvChange(movie, fn) {
+  const cur = state.movies.get(movie.id) || movie;
+  const before = cur.watchLog.length;
+  let next = fn(cur);
+  // Once you've started a show it lives in Up next / Watched, not the plain watchlist.
+  if (episodesWatched(next) > 0) next = { ...next, inWatchlist: false };
+  const isNew = !state.movies.has(movie.id);
+  const saved = await saveMovie(next, { isNew });
+  if (isNew && state.drawer?.pending) state.drawer = { id: saved.id };
+  if (saved.watchLog.length > before) {
+    const e = saved.watchLog.find((x) => !cur.watchLog.some((y) => y.notes === x.notes && y.date === x.date));
+    toast(`${e?.notes || "Season"} finished — added to history`);
+  }
+  return saved;
+}
+
+async function plusOne(id) {
+  const m = state.movies.get(id);
+  const nx = m && upNext(m);
+  if (!nx) return;
+  await tvChange(m, (cur) => setEpisode(cur, nx.season, nx.ep, true, todayISO()));
+  toast(`${m.title} · ${epLabel(nx.season, nx.ep)} watched`);
+}
+
+/** Loads the season list for a show that doesn't have it yet (e.g. opened from search). */
+async function ensureSeasons(movie) {
+  if (Array.isArray(movie.seasons) || metaTried.has(`drawer:${movie.id}`)) return;
+  metaTried.add(`drawer:${movie.id}`);
+  try {
+    const meta = await fetchMovieMeta(movie);
+    if (state.movies.has(movie.id)) {
+      const next = normalizeMovie({ ...state.movies.get(movie.id), ...meta });
+      await state.adapter.updateMovie(next);
+      state.movies.set(next.id, next);
+    } else if (state.drawer?.pending?.id === movie.id) {
+      state.drawer = { pending: normalizeMovie({ ...state.drawer.pending, ...meta }) };
+    }
+    if (!state.editing) renderDrawer();
+  } catch (err) {
+    console.warn(err);
+  }
+}
+
+function tvPanel(movie) {
+  if (!Array.isArray(movie.seasons)) {
+    ensureSeasons(movie);
+    return h("section", { class: "panel tv-panel" },
+      h("span", { class: "micro panel-label", text: "Episodes" }),
+      h("p", { class: "muted", text: tmdbReady ? "Loading seasons…" : "Seasons need a TMDB token." }));
+  }
+  const st = tvState(movie);
+  const { aired, watched } = totals(movie);
+  const nx = upNext(movie);
+
+  let head;
+  if (nx) {
+    head = h("div", { class: "upnext" },
+      h("div", {},
+        h("span", { class: "micro", text: st === "notstarted" ? "Start with" : "Up next" }),
+        h("strong", { class: "upnext-ep mono", text: epLabel(nx.season, nx.ep) })),
+      h("button", { type: "button", class: "btn btn-hero", onclick: () => tvChange(movie, (c) => setEpisode(c, nx.season, nx.ep, true, todayISO())).catch(() => {}) },
+        icon("eye"), `Watched E${nx.ep}`));
+  } else if (st === "caughtup") {
+    head = h("p", { class: "upnext-note", text: movie.nextAirDate ? `Caught up · ${epLabel(movie.nextAirSeason, movie.nextAirEpisode)} airs ${whenLabel(movie.nextAirDate).toLowerCase()} (${movie.nextAirDate})` : "Caught up · waiting for new episodes" });
+  } else if (st === "finished") {
+    head = h("div", { class: "upnext" },
+      h("p", { class: "upnext-note", text: movie.cycle > 1 ? `Finished · watch-through ${movie.cycle}` : "Finished — every episode watched" }),
+      h("button", { type: "button", class: "btn", onclick: () => tvChange(movie, startRewatch).catch(() => {}) }, "Start rewatch"));
+  } else {
+    head = h("p", { class: "upnext-note", text: movie.releaseDate ? `Premieres ${movie.releaseDate}` : "No episodes have aired yet" });
+  }
+
+  const seasons = seasonsOf(movie).map((s) => seasonRow(movie, s));
+  return h("section", { class: "panel tv-panel" },
+    h("span", { class: "micro panel-label", text: movie.cycle > 1 ? `Episodes · rewatch ${movie.cycle - 1}` : "Episodes" }),
+    h("p", { class: "tv-count mono", text: `${watched}/${aired} aired episodes watched` }),
+    head,
+    seasons.length ? h("ol", { class: "season-list" }, seasons) : h("p", { class: "muted", text: "TMDB has no seasons for this show yet." }),
+    aired > watched
+      ? h("button", { type: "button", class: "btn btn-sm btn-ghost", onclick: () => tvChange(movie, (c) => setAllAired(c)).catch(() => {}) }, "Mark every aired episode watched")
+      : null);
+}
+
+function seasonRow(movie, s) {
+  const key = `${movie.id}:${s.n}`;
+  const open = openSeason === key;
+  const aired = airedIn(movie, s.n);
+  const watched = watchedIn(movie, s.n);
+  const bar = h("span", { class: "ep-bar", "aria-hidden": "true" });
+  for (let e = 1; e <= s.c; e++) {
+    bar.append(h("span", { class: isWatched(movie, s.n, e) ? "on" : isAired(movie, s.n, e) ? "" : "future" }));
+  }
+  const li = h("li", { class: `season${open ? " is-open" : ""}` },
+    h("button", { type: "button", class: "season-head", "aria-expanded": String(open), onclick: () => { openSeason = open ? null : key; renderDrawer(); } },
+      h("span", { class: "season-name", text: `Season ${s.n}` }),
+      h("span", { class: "season-count mono", text: aired < s.c ? `${watched}/${aired} · ${s.c - aired} upcoming` : `${watched}/${s.c}` }),
+      bar));
+  if (open) li.append(seasonBody(movie, s, aired, watched));
+  return li;
+}
+
+function seasonBody(movie, s, aired, watched) {
+  const cacheKey = `${movie.tmdbId}:${s.n}`;
+  const eps = seasonCache.get(cacheKey);
+  if (!eps && !seasonCache.has(`${cacheKey}:loading`)) {
+    seasonCache.set(`${cacheKey}:loading`, true);
+    fetchSeason(movie.tmdbId, s.n)
+      .then((list) => { seasonCache.set(cacheKey, list); if (!state.editing) renderDrawer(); })
+      .catch((err) => console.warn(err))
+      .finally(() => seasonCache.delete(`${cacheKey}:loading`));
+  }
+  const rows = [];
+  for (let e = 1; e <= s.c; e++) {
+    const info = eps?.find((x) => x.e === e);
+    const airedEp = isAired(movie, s.n, e);
+    const id = `ep-${movie.id}-${s.n}-${e}`;
+    const cb = h("input", { type: "checkbox", id, checked: isWatched(movie, s.n, e), disabled: !airedEp });
+    cb.addEventListener("change", () => tvChange(movie, (c) => setEpisode(c, s.n, e, cb.checked, todayISO())).catch(() => {}));
+    rows.push(h("li", {},
+      h("label", { class: `ep-row${airedEp ? "" : " is-future"}`, for: id }, cb,
+        h("span", { class: "ep-num mono", text: `E${e}` }),
+        h("span", { class: "ep-name", text: info?.name || (eps ? "" : "…") }),
+        h("span", { class: "ep-date mono", text: !airedEp && info?.airDate ? info.airDate : "" }))));
+  }
+  return h("div", { class: "season-body" },
+    h("div", { class: "season-actions" },
+      aired > watched
+        ? h("button", { type: "button", class: "btn btn-xs btn-hero", onclick: () => tvChange(movie, (c) => setSeason(c, s.n, true, null)).catch(() => {}) }, `Mark season ${s.n} watched`)
+        : null,
+      watched
+        ? h("button", { type: "button", class: "btn btn-xs btn-ghost", onclick: () => tvChange(movie, (c) => setSeason(c, s.n, false)).catch(() => {}) }, "Clear season")
+        : null),
+    h("ol", { class: "ep-list" }, rows));
 }
 
 // ---------------------------------------------------------------- lists
@@ -1199,6 +1479,7 @@ function wireEvents() {
         case "open": openDrawer({ id }); break;
         case "edit-poster": openPosterEditor(id); break;
         case "add-watchlist": await addToWatchlist(id); break;
+        case "ep-plus": await plusOne(id); break;
         case "log-new": {
           const r = resultById(id);
           if (r) openDrawer({ pending: fromResult(r) });

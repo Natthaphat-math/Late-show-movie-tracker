@@ -46,21 +46,93 @@ export async function searchMoviesOnce(query, year = null) {
   return results.slice(0, 8);
 }
 
-/** Genres, release year and runtime for one library entry (used by the stats page). */
+/**
+ * The phone's region (e.g. "TH") for release dates: the first preferred language that names a
+ * region, else the likely region for the language. null if the browser can't tell.
+ */
+export function userRegion() {
+  try {
+    for (const tag of navigator.languages || [navigator.language]) {
+      const r = new Intl.Locale(tag).region;
+      if (r) return r.toUpperCase();
+    }
+    return new Intl.Locale(navigator.language).maximize().region || null;
+  } catch {
+    return null;
+  }
+}
+
+const dateOnly = (s) => (typeof s === "string" && /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : null);
+
+/** Release date in `region`: earliest theatrical, else earliest digital/physical/TV, else null. */
+function regionalRelease(releaseDates, region) {
+  const r = (releaseDates?.results || []).find((x) => x.iso_3166_1 === region);
+  if (!r) return null;
+  const pick = (types) => r.release_dates.filter((d) => types.includes(d.type)).map((d) => dateOnly(d.release_date)).filter(Boolean).sort()[0] || null;
+  return pick([2, 3]) || pick([4, 5, 6]);
+}
+
+/**
+ * Facts for one library entry, used by stats, Coming soon and TV progress.
+ * Movies: genres, year, runtime, release date (your region when TMDB has it).
+ * TV: genres, first-air date, typical episode length, status, next episode, season list.
+ */
 export async function fetchMovieMeta(movie) {
   if (!token) throw new Error("TMDB token missing.");
   const tv = movie.mediaType === "tv";
-  const res = await fetch(`${API}/${tv ? "tv" : "movie"}/${encodeURIComponent(movie.tmdbId)}`, { headers: headers() });
-  if (res.status === 404) return { genres: [], releaseYear: null, runtime: null };
+  const url = `${API}/${tv ? "tv" : "movie"}/${encodeURIComponent(movie.tmdbId)}${tv ? "" : "?append_to_response=release_dates"}`;
+  const res = await fetch(url, { headers: headers() });
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  if (res.status === 404) return { genres: [], releaseYear: null, runtime: null, seasons: tv ? [] : null, metaDate: today };
   if (!res.ok) throw new Error(`TMDB details failed (${res.status}).`);
   const d = await res.json();
-  const year = Number.parseInt(String((tv ? d.first_air_date : d.release_date) || "").slice(0, 4), 10);
+  const genres = (Array.isArray(d.genres) ? d.genres : []).map((g) => g && g.id).filter((id) => Number.isInteger(id) && id > 0);
+
+  if (!tv) {
+    const releaseDate = regionalRelease(d.release_dates, userRegion()) || dateOnly(d.release_date);
+    return {
+      genres,
+      releaseYear: releaseDate ? Number(releaseDate.slice(0, 4)) : null,
+      runtime: Number.isInteger(d.runtime) && d.runtime > 0 ? d.runtime : null,
+      releaseDate,
+      metaDate: today,
+    };
+  }
+
+  const first = dateOnly(d.first_air_date);
+  const next = d.next_episode_to_air;
+  const epRuntime = [...(Array.isArray(d.episode_run_time) ? d.episode_run_time : []), d.last_episode_to_air?.runtime, next?.runtime]
+    .find((x) => Number.isInteger(x) && x > 0) || null;
+  const status = d.status === "Ended" || d.status === "Canceled" ? "ended"
+    : d.status === "Returning Series" ? "returning"
+    : d.status ? "planned" : null;
   return {
-    genres: (Array.isArray(d.genres) ? d.genres : []).map((g) => g && g.id).filter((id) => Number.isInteger(id) && id > 0),
-    releaseYear: Number.isInteger(year) ? year : null,
-    // A show's total length isn't reliable on TMDB, so TV stays out of "hours watched".
-    runtime: !tv && Number.isInteger(d.runtime) && d.runtime > 0 ? d.runtime : null,
+    genres,
+    releaseYear: first ? Number(first.slice(0, 4)) : null,
+    runtime: epRuntime,
+    releaseDate: first,
+    tvStatus: status,
+    nextAirDate: dateOnly(next?.air_date),
+    nextAirSeason: Number.isInteger(next?.season_number) ? next.season_number : null,
+    nextAirEpisode: Number.isInteger(next?.episode_number) ? next.episode_number : null,
+    // Season 0 is "Specials" — left out of progress.
+    seasons: (Array.isArray(d.seasons) ? d.seasons : [])
+      .filter((x) => Number.isInteger(x.season_number) && x.season_number > 0 && Number.isInteger(x.episode_count))
+      .map((x) => ({ n: x.season_number, c: x.episode_count, d: dateOnly(x.air_date) })),
+    metaDate: today,
   };
+}
+
+/** Episode list for one season (names, air dates) — fetched on demand, not stored. */
+export async function fetchSeason(tmdbId, season) {
+  if (!token) throw new Error("TMDB token missing.");
+  const res = await fetch(`${API}/tv/${encodeURIComponent(tmdbId)}/season/${encodeURIComponent(season)}`, { headers: headers() });
+  if (!res.ok) throw new Error(`TMDB season failed (${res.status}).`);
+  const d = await res.json();
+  return (Array.isArray(d.episodes) ? d.episodes : [])
+    .filter((e) => Number.isInteger(e.episode_number))
+    .map((e) => ({ e: e.episode_number, name: typeof e.name === "string" ? e.name.slice(0, 200) : "", airDate: dateOnly(e.air_date) }));
 }
 
 function cleanResults(data) {

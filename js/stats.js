@@ -5,6 +5,7 @@
 // printed next to every bar and repeated in a hover title, so the chart doubles as a table.
 
 import { h } from "./ui.js";
+import { episodesWatched } from "./tv.js";
 
 // TMDB's movie genre ids are fixed; hard-coding them saves a request per page load.
 export const GENRES = {
@@ -26,7 +27,7 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
  * opts.pending: movies still waiting for genre data. opts.blocked: rules reject meta fields.
  */
 export function tasteProfile(movies, { onGenre, pending = 0, blocked = false } = {}) {
-  const watched = movies.filter((m) => m.watchLog.length > 0);
+  const watched = movies.filter((m) => m.watchLog.length > 0 || episodesWatched(m) > 0);
   const withMeta = watched.filter((m) => Array.isArray(m.genres));
 
   const panels = [
