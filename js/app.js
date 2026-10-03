@@ -7,7 +7,7 @@ import {
 } from "./storage.js";
 import { listShelf, listDetail } from "./lists.js";
 import { listForm, listPicker, customForm } from "./sheets.js";
-import { initSearch, searchMovies, isAbort, fetchMovieMeta, fetchSeason, userRegion } from "./search.js";
+import { initSearch, searchMovies, isAbort, fetchMovieMeta, fetchSeason, fetchRelated, userRegion } from "./search.js";
 import {
   seasonsOf, isWatched, isAired, airedIn, watchedIn, episodesWatched, totals, upNext, tvState, epLabel,
   setEpisode, setSeason, setAllAired, startRewatch,
@@ -895,6 +895,7 @@ function renderDrawer() {
     movie.mediaType === "tv" && !ed ? tvPanel(movie) : logForm,
     inLib ? history : null,
     listsSection(movie),
+    relatedSection(movie),
     actions].filter(Boolean));
 }
 
@@ -1101,6 +1102,95 @@ function seasonBody(movie, s, aired, watched) {
         ? h("button", { type: "button", class: "btn btn-xs btn-ghost", onclick: () => tvChange(movie, (c) => setSeason(c, s.n, false)).catch(() => {}) }, "Clear season")
         : null),
     h("ol", { class: "ep-list" }, rows));
+}
+
+// ---------------------------------------------------------------- related titles (drawer)
+
+const relatedCache = new Map(); // movie id → { collection, more } | Promise
+
+/**
+ * "Part of the … collection" and "More like this" rows. Loaded from TMDB only when the section
+ * scrolls into view, cached for the session, and never saved to Firestore. The section fills
+ * itself in place, so it never resets a form in the drawer.
+ */
+function relatedSection(movie) {
+  if (movie.mediaType === "custom" || !movie.tmdbId || !tmdbReady) return null;
+  const section = h("section", { class: "related", "aria-label": "Related titles" });
+  const cached = relatedCache.get(movie.id);
+  if (cached && !(cached instanceof Promise)) {
+    fillRelated(section, movie, cached);
+    return section;
+  }
+  section.append(h("p", { class: "muted micro", text: "More like this…" }));
+  const load = () => {
+    let p = relatedCache.get(movie.id);
+    if (!p) {
+      p = fetchRelated(movie).then((data) => { relatedCache.set(movie.id, data); return data; })
+        .catch((err) => { relatedCache.delete(movie.id); throw err; });
+      relatedCache.set(movie.id, p);
+    }
+    p.then((data) => { if (section.isConnected) fillRelated(section, movie, data); })
+      .catch(() => { if (section.isConnected) section.replaceChildren(h("p", { class: "muted", text: "Couldn't load related titles." })); });
+  };
+  if ("IntersectionObserver" in window) {
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { io.disconnect(); load(); }
+    }, { root: $("#drawer"), rootMargin: "200px" });
+    io.observe(section);
+  } else {
+    load();
+  }
+  return section;
+}
+
+function fillRelated(section, movie, { collection, more }) {
+  const rows = [];
+  if (collection) {
+    const seen = collection.parts.filter((p) => isSeen(state.movies.get(p.id))).length;
+    rows.push(relatedRow(`Part of ${collection.name}`, `${seen} of ${collection.parts.length} watched`, collection.parts, movie, section));
+  }
+  if (more.length) rows.push(relatedRow("More like this", null, more, movie, section));
+  if (!rows.length) { section.replaceChildren(); return; }
+  section.replaceChildren(...rows);
+}
+
+function isSeen(m) {
+  return Boolean(m && (m.watchLog.length || episodesWatched(m)));
+}
+
+function relatedRow(title, sub, items, current, section) {
+  return h("div", { class: "rel-row" },
+    h("div", { class: "rel-head" },
+      h("span", { class: "micro", text: title }),
+      sub ? h("span", { class: "micro rel-sub", text: sub }) : null),
+    h("ol", { class: "rel-strip" }, items.map((r) => relatedTile(r, current, section))));
+}
+
+function relatedTile(r, current, section) {
+  const lib = state.movies.get(r.id);
+  const seen = isSeen(lib);
+  const isThis = r.id === current.id;
+  const open = () => {
+    if (isThis) return;
+    openDrawer(lib ? { id: r.id } : { pending: fromResult(r) });
+    $("#drawer").scrollTop = 0;
+  };
+  const add = async (e) => {
+    e.stopPropagation();
+    await saveMovie(fromResult(r, { inWatchlist: true }), { isNew: true });
+    toast(`Added “${r.title}” to your watchlist`);
+    fillRelated(section, current, relatedCache.get(current.id));
+  };
+  return h("li", { class: `rel-tile${seen ? " is-seen" : ""}${isThis ? " is-this" : ""}` },
+    h("button", { type: "button", class: "rel-open", onclick: open, "aria-label": `${r.title}${r.year ? ` (${r.year})` : ""}${isThis ? ", this title" : seen ? ", watched" : lib ? ", in your library" : ""}`, disabled: isThis },
+      posterSlot(r.posterPath ? `https://image.tmdb.org/t/p/w185${r.posterPath}` : null, { emoji: lib?.emoji }),
+      r.mediaType === "tv" ? h("span", { class: "kind-badge", text: "TV" }) : null,
+      seen ? h("span", { class: "rel-check", "aria-hidden": "true", text: "✓" }) : null,
+      h("span", { class: "rel-title", text: r.title }),
+      h("span", { class: "rel-year mono", text: isThis ? "This one" : seen ? "Seen" : lib ? "In library" : r.year || "TBA" })),
+    !lib && !isThis
+      ? h("button", { type: "button", class: "icon-btn rel-add", "aria-label": `Add ${r.title} to watchlist`, title: "Add to watchlist", onclick: (e) => add(e).catch(() => {}) }, icon("plus"))
+      : null);
 }
 
 // ---------------------------------------------------------------- lists

@@ -135,6 +135,44 @@ export async function fetchSeason(tmdbId, season) {
     .map((e) => ({ e: e.episode_number, name: typeof e.name === "string" ? e.name.slice(0, 200) : "", airDate: dateOnly(e.air_date) }));
 }
 
+/**
+ * Related titles for the detail page: the franchise/collection a movie belongs to (in release
+ * order) and TMDB's recommendations, falling back to "similar" when there are none.
+ * Returns { collection: { name, parts } | null, more: [...] } using the same shape as search results.
+ */
+export async function fetchRelated(movie) {
+  if (!token) throw new Error("TMDB token missing.");
+  const tv = movie.mediaType === "tv";
+  const kind = tv ? "tv" : "movie";
+  const res = await fetch(`${API}/${kind}/${encodeURIComponent(movie.tmdbId)}?append_to_response=recommendations,similar`, { headers: headers() });
+  if (!res.ok) throw new Error(`TMDB related failed (${res.status}).`);
+  const d = await res.json();
+  const tag = (list) => (Array.isArray(list) ? list : []).filter((r) => !r.adult).map((r) => ({ ...r, media_type: r.media_type || kind }));
+  const recs = tag(d.recommendations?.results);
+  const more = cleanResults({ results: recs.length ? recs : tag(d.similar?.results) })
+    .filter((r) => r.tmdbId !== movie.tmdbId)
+    .slice(0, 12);
+
+  let collection = null;
+  const c = d.belongs_to_collection;
+  if (!tv && c && Number.isInteger(c.id)) {
+    try {
+      const cr = await fetch(`${API}/collection/${encodeURIComponent(c.id)}`, { headers: headers() });
+      if (cr.ok) {
+        const cd = await cr.json();
+        const parts = cleanResults({ results: tag(cd.parts).map((p) => ({ ...p, media_type: "movie" })) })
+          .sort((a, b) => (a.year || "9999").localeCompare(b.year || "9999"));
+        if (parts.length > 1) collection = { name: typeof cd.name === "string" ? cd.name.slice(0, 200) : "Collection", parts };
+      }
+    } catch {
+      // The collection row is a bonus; recommendations still show.
+    }
+  }
+  // Don't repeat collection films in "More like this".
+  const inCollection = new Set((collection?.parts || []).map((p) => p.id));
+  return { collection, more: more.filter((r) => !inCollection.has(r.id)) };
+}
+
 function cleanResults(data) {
   return (Array.isArray(data.results) ? data.results : [])
     .filter((r) => (r.media_type === "movie" || r.media_type === "tv") && Number.isSafeInteger(r.id) && r.id > 0)
