@@ -521,7 +521,6 @@ function renderWatchlist() {
     h("div", { class: "wl-head" }, h("h2", { class: "wl-title", text: title }), sub ? h("span", { class: "micro", text: sub }) : null),
     h("div", { class: "grid" }, cards));
   return h("div", {},
-    u.length ? section("Up next", `${u.length} show${u.length === 1 ? "" : "s"} in progress`, u.map(upNextCard)) : null,
     soon.length ? section("Coming soon", null, soon.map((m) => {
       const caughtUp = m.mediaType === "tv" && tvState(m) === "caughtup";
       return libraryCard(m, {
@@ -529,6 +528,7 @@ function renderWatchlist() {
         caption: caughtUp && m.nextAirSeason ? `New ${epLabel(m.nextAirSeason, m.nextAirEpisode)}` : null,
       });
     })) : null,
+    u.length ? section("Up next", `${u.length} show${u.length === 1 ? "" : "s"} in progress`, u.map(upNextCard)) : null,
     out.length ? section(soon.length || u.length ? "Out now" : "Watchlist", null,
       out.map((m) => libraryCard(m, { badge: m.mediaType !== "tv" && isNew(m.releaseDate) ? "NEW" : null }))) : null);
 }
