@@ -6,6 +6,7 @@ import {
   newId, normalizeList, cleanEmoji,
 } from "./storage.js";
 import { listShelf, listDetail } from "./lists.js";
+import { renderDiscover, refreshSources, cachedSources, cacheIsFresh } from "./discover.js";
 import { listForm, listPicker, customForm } from "./sheets.js";
 import { initSearch, searchMovies, isAbort, fetchMovieMeta, fetchSeason, fetchRelated, userRegion } from "./search.js";
 import {
@@ -30,7 +31,9 @@ const state = {
   adapter: localStorageAdapter,
   movies: new Map(),
   view: "watchlist",
-  sort: { watchlist: "added", watched: "recent" },
+  sort: { watchlist: "added", watched: "recent", discover: "all" },
+  prefs: { hidden: [] },  // Discover "Not interested" (synced)
+  discover: { data: null, loading: false, error: null },
   search: { query: "", results: [], loading: false, error: null },
   drawer: null, // { id } or { pending: movie }
   posterEditId: null,
@@ -94,6 +97,9 @@ function withSyncTracking(adapter) {
     updateMovie: (m) => track(adapter.updateMovie(m)),
     removeMovie: (id) => track(adapter.removeMovie(id)),
     getLists: () => adapter.getLists(),
+    getPrefs: () => adapter.getPrefs(),
+    savePrefs: (p) => track(adapter.savePrefs(p)),
+    get prefsBlocked() { return adapter.prefsBlocked; },
     saveList: (l) => track(adapter.saveList(l)),
     removeList: (id) => track(adapter.removeList(id)),
     get listsBlocked() { return adapter.listsBlocked; },
@@ -115,6 +121,7 @@ async function useAdapter(adapter) {
   const list = await adapter.getMovies();
   state.movies = new Map(list.map((m) => [m.id, m]));
   state.lists = await adapter.getLists().catch((err) => { console.warn("Couldn't load lists", err); return []; });
+  state.prefs = await adapter.getPrefs().catch(() => ({ hidden: [] }));
   if (state.listId && !state.lists.some((l) => l.id === state.listId)) state.listId = null;
   $("#storage-note").textContent = adapter.name === "firestore" ? "Synced to owner cloud" : "Saved in this browser";
   metaTried.clear();
@@ -250,6 +257,11 @@ async function offerLocalMerge(uid) {
   if (choice !== "merge") return;
   const local = await localStorageAdapter.getMovies();
   await runImport(local, "merge", await localStorageAdapter.getLists());
+  const localPrefs = await localStorageAdapter.getPrefs();
+  if (localPrefs.hidden.length) {
+    state.prefs = { hidden: [...new Set([...state.prefs.hidden, ...localPrefs.hidden])] };
+    await state.adapter.savePrefs(state.prefs).catch(() => {});
+  }
 }
 
 function setOwnerButton(mode) {
@@ -417,13 +429,15 @@ async function addToWatchlist(id) {
 const VIEW_META = {
   watchlist: { kicker: "Channel 01", title: "Watchlist" },
   watched: { kicker: "Channel 02", title: "Watched" },
-  stats: { kicker: "Channel 03", title: "Stats" },
+  discover: { kicker: "Channel 03", title: "Discover" },
   lists: { kicker: "Channel 04", title: "Lists" },
+  stats: { kicker: "Channel 05", title: "Stats" },
 };
 
 const SORTS = {
   watchlist: [["added", "Newest"], ["title", "A–Z"]],
   watched: [["recent", "Recent"], ["count", "Most watched"], ["rating", "Rating"], ["title", "A–Z"]],
+  discover: [["all", "All"], ["movie", "Movies"], ["tv", "TV"]],
 };
 
 function lastEntry(m) { return m.watchLog[m.watchLog.length - 1]; }
@@ -560,6 +574,7 @@ function render({ drawer = true } = {}) {
     renderSort(sortEl);
     view.replaceChildren(
       state.view === "stats" ? renderStats()
+        : state.view === "discover" ? discoverView()
         : state.view === "lists" ? (openList ? listDetail(openList, state.movies) : listShelf(state.lists, state.movies))
         : renderGrid(state.view));
   }
@@ -1191,6 +1206,61 @@ function relatedTile(r, current, section) {
     !lib && !isThis
       ? h("button", { type: "button", class: "icon-btn rel-add", "aria-label": `Add ${r.title} to watchlist`, title: "Add to watchlist", onclick: (e) => add(e).catch(() => {}) }, icon("plus"))
       : null);
+}
+
+// ---------------------------------------------------------------- discover
+
+function discoverView() {
+  const d = state.discover;
+  if (!d.data) d.data = cachedSources();
+  // Auto-refresh at most every 10 minutes, even if the cache can't be saved on this device.
+  if (!d.loading && tmdbReady && !cacheIsFresh(state.movies) && Date.now() - (d.lastAuto || 0) > 600000) {
+    d.lastAuto = Date.now();
+    refreshDiscover();
+  }
+  if (!tmdbReady) return emptyState("No signal", "Discover needs a TMDB token.");
+  return renderDiscover(d.data, state.movies, new Set(state.prefs.hidden), state.sort.discover, {
+    loading: d.loading,
+    error: d.error,
+    refresh: () => refreshDiscover(),
+    open: (r) => openDrawer({ pending: fromResult(r) }),
+    add: (r) => saveMovie(fromResult(r, { inWatchlist: true }), { isNew: true })
+      .then(() => toast(`Added “${r.title}” to your watchlist`)).catch(() => {}),
+    hide: (r) => hideTitle(r).catch(() => {}),
+  });
+}
+
+async function refreshDiscover() {
+  const d = state.discover;
+  if (d.loading) return;
+  d.loading = true;
+  d.error = null;
+  if (state.view === "discover" && !state.search.query) render({ drawer: false });
+  try {
+    d.data = await refreshSources(state.movies);
+  } catch (err) {
+    console.error(err);
+    d.error = "Couldn't reach TMDB. Try ↻ Refresh in a moment.";
+  } finally {
+    d.loading = false;
+    if (state.view === "discover" && !state.search.query) render({ drawer: false });
+  }
+}
+
+/** "Not interested": hide from Discover (synced) — also stops it being recommended again. */
+async function hideTitle(r) {
+  const prev = state.prefs;
+  state.prefs = { hidden: [...prev.hidden.filter((x) => x !== r.id), r.id] };
+  render({ drawer: false });
+  try {
+    await state.adapter.savePrefs(state.prefs);
+    toast(`Won't suggest “${r.title}” again`);
+  } catch (err) {
+    console.error(err);
+    state.prefs = prev;
+    render({ drawer: false });
+    toast(err?.code === "permission-denied" ? "Not interested needs the updated Firestore rules — see DEPLOY.md." : "Couldn't save that.", "error");
+  }
 }
 
 // ---------------------------------------------------------------- lists

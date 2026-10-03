@@ -847,6 +847,22 @@ dialog::backdrop { background: var(--backdrop); }
 }
 .rel-add { position: absolute; z-index: 3; top: 6px; right: 6px; width: 30px; height: 30px; border-radius: 50%; }
 
+/* ---------------------------------------------------------------- discover */
+
+.discover { display: flex; flex-direction: column; gap: 30px; }
+.disc-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.disc-row { display: flex; flex-direction: column; gap: 10px; }
+.disc-title { font-size: 18px; font-weight: 900; font-stretch: 110%; text-transform: uppercase; overflow-wrap: anywhere; }
+.disc-strip { margin: 0; padding: 4px 2px 12px; }
+.disc-tile { width: 128px; }
+.disc-note { font-size: 11.5px; line-height: 1.25; color: var(--hero); font-weight: 700; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.disc-hide {
+  position: absolute; z-index: 3; top: 42px; right: 6px;
+  width: 30px; height: 30px; border-radius: 50%;
+  opacity: .85;
+}
+.disc-cold { padding: 24px 16px 16px; }
+
 /* ---------------------------------------------------------------- lists: VHS shelf */
 
 .shelf-intro { margin-bottom: 18px; max-width: 60ch; }
@@ -1080,7 +1096,8 @@ select {
     box-shadow: 4px 4px 0 var(--shadow);
   }
   .rail-label, .rail-data { display: none; }
-  .rail-btn { flex: 1; justify-content: center; flex-direction: column; gap: 4px; padding: 7px 4px; border-radius: 999px; font-size: 12px; }
+  .rail-btn { flex: 1; min-width: 0; justify-content: center; flex-direction: column; gap: 4px; padding: 7px 2px; border-radius: 999px; font-size: 11px; }
+  .rail-btn span:not(.count) { overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   .rail-btn .count { position: absolute; margin: 0; transform: translate(22px, -16px); min-width: 22px; font-size: 10px; padding: 3px 5px; }
   .rail-btn { position: relative; }
 

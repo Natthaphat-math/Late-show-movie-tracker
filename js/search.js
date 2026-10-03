@@ -187,9 +187,50 @@ function cleanResults(data) {
         title: typeof title === "string" ? title.slice(0, 300) : "",
         year: typeof date === "string" ? date.slice(0, 4) : "",
         posterPath: typeof r.poster_path === "string" && POSTER_PATH_RE.test(r.poster_path) ? r.poster_path : null,
+        // Used by Discover's scoring; ignored elsewhere.
+        date: dateOnly(date),
+        voteAvg: typeof r.vote_average === "number" ? r.vote_average : null,
+        voteCount: Number.isInteger(r.vote_count) ? r.vote_count : null,
+        genreIds: Array.isArray(r.genre_ids) ? r.genre_ids.filter(Number.isInteger) : [],
       };
     })
     .filter((r) => r.title);
+}
+
+// ---------------------------------------------------------------- Discover sources
+
+async function getList(path, kind = null) {
+  if (!token) throw new Error("TMDB token missing.");
+  const res = await fetch(`${API}${path}`, { headers: headers() });
+  if (!res.ok) throw new Error(`TMDB ${path.split("?")[0]} failed (${res.status}).`);
+  const d = await res.json();
+  const list = (Array.isArray(d.results) ? d.results : []).filter((r) => !r.adult).map((r) => ({ ...r, media_type: r.media_type || kind }));
+  return cleanResults({ results: list });
+}
+
+/** TMDB's recommendations for one title (about 20). */
+export function fetchRecommendations(item) {
+  const kind = item.mediaType === "tv" ? "tv" : "movie";
+  return getList(`/${kind}/${encodeURIComponent(item.tmdbId)}/recommendations?page=1`, kind);
+}
+
+export function fetchTrending() {
+  return getList("/trending/all/week");
+}
+
+/** Upcoming films in a region, plus shows with episodes airing this week. */
+export async function fetchUpcoming(region) {
+  const r = region ? `&region=${encodeURIComponent(region)}` : "";
+  const [movies, tv] = await Promise.all([
+    getList(`/movie/upcoming?page=1${r}`, "movie"),
+    getList("/tv/on_the_air?page=1", "tv").catch(() => []),
+  ]);
+  return { movies, tv };
+}
+
+/** Well-rated but not hugely famous titles in one genre. */
+export function fetchHiddenGems(genreId, kind = "movie") {
+  return getList(`/discover/${kind}?with_genres=${encodeURIComponent(genreId)}&sort_by=vote_average.desc&vote_average.gte=7.3&vote_count.gte=150&vote_count.lte=4000&include_adult=false&page=1`, kind);
 }
 
 export function isAbort(err) {

@@ -34,6 +34,7 @@ export async function loadFirebase(config) {
     collection: fs.collection,
     doc: fs.doc,
     getDocs: fs.getDocs,
+    getDoc: fs.getDoc,
     setDoc: fs.setDoc,
     deleteDoc: fs.deleteDoc,
   };

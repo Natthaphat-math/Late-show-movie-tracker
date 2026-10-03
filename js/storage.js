@@ -19,6 +19,7 @@
 
 export const LOCAL_KEY = "movieTracker.library.v1";
 export const LOCAL_LISTS_KEY = "movieTracker.lists.v1";
+export const LOCAL_PREFS_KEY = "movieTracker.prefs.v1";
 
 const LIMITS = { title: 300, notes: 2000, url: 2048, watchLog: 1000, emoji: 16, listName: 80, listDesc: 300, listItems: 500 };
 const POSTER_PATH_RE = /^\/[A-Za-z0-9_.-]{1,200}$/;
@@ -222,6 +223,12 @@ export function normalizeList(raw) {
   };
 }
 
+/** Discover preferences. hidden = titles marked "Not interested" (newest last, capped). */
+export function normalizePrefs(raw) {
+  const hidden = Array.isArray(raw?.hidden) ? raw.hidden.filter((x) => typeof x === "string" && MOVIE_ID_RE.test(x)) : [];
+  return { hidden: [...new Set(hidden)].slice(-1000) };
+}
+
 // ---------- import / export / merge ----------
 
 export function buildExport(movies, lists = []) {
@@ -383,6 +390,12 @@ export const localStorageAdapter = {
   async removeList(id) {
     writeLocalLists(readLocalLists().filter((x) => x.id !== id));
   },
+  async getPrefs() {
+    return normalizePrefs(readJSON(LOCAL_PREFS_KEY));
+  },
+  async savePrefs(prefs) {
+    localStorage.setItem(LOCAL_PREFS_KEY, JSON.stringify(normalizePrefs(prefs)));
+  },
 };
 
 export function localLibraryCount() {
@@ -460,6 +473,19 @@ export function createFirestoreAdapter(fb, uid) {
     },
     async removeList(id) {
       await fb.deleteDoc(ref("lists", id));
+    },
+    // users/{uid}/prefs/discover
+    async getPrefs() {
+      try {
+        const snap = await fb.getDoc(ref("prefs", "discover"));
+        return normalizePrefs(snap.exists() ? snap.data() : null);
+      } catch (err) {
+        if (err?.code === "permission-denied") { this.prefsBlocked = true; return normalizePrefs(null); }
+        throw err;
+      }
+    },
+    async savePrefs(prefs) {
+      await fb.setDoc(ref("prefs", "discover"), normalizePrefs(prefs));
     },
   };
 }
