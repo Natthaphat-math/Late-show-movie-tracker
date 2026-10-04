@@ -23,6 +23,7 @@ import {
 } from "./ui.js";
 import * as fire from "./firebase-init.js";
 import { initBatch, openBatch } from "./batch.js";
+import { catalogFor, loadCatalog, recordAvailability, onMyServices, refreshAvailability } from "./services.js";
 
 const $ = (sel) => document.querySelector(sel);
 const THEME_KEY = "movieTracker.theme";
@@ -48,6 +49,8 @@ const state = {
   review: null, // { queue: [{ id, rating }], i } — one-by-one detail pass after batch add
   editing: null, // { id, idx } — watch entry being edited in the drawer
   booting: false, // owner device opening for the first time: waiting for the cloud library
+  svcOnly: false, // Watchlist filter: only titles streaming on my services
+  showAllServices: false, // Settings: show every service, not just the popular ones
   genre: null,   // TMDB genre id filtering the Watched grid (set from the Stats page)
   lists: [],     // custom lists, in creation order
   listId: null,  // list open in the Lists view (null = the shelf)
@@ -683,7 +686,7 @@ function isNew(iso) {
 /** Card with a "+1" button for the next episode of a show you're watching. */
 function upNextCard(m) {
   const nx = upNext(m);
-  const card = libraryCard(m, { caption: nx ? `Next ${epLabel(nx.season, nx.ep)}` : null });
+  const card = libraryCard(m, { caption: nx ? `Next ${epLabel(nx.season, nx.ep)}` : null, extra: serviceStrip(m) });
   if (nx) {
     card.append(h("div", { class: "card-tools" },
       h("button", { type: "button", class: "btn btn-xs btn-hero", dataset: { action: "ep-plus", id: m.id }, "aria-label": `Mark ${m.title} ${epLabel(nx.season, nx.ep)} watched` }, icon("plus"), `E${nx.ep}`)));
@@ -691,25 +694,82 @@ function upNextCard(m) {
   return card;
 }
 
+// ---------------------------------------------------------------- my streaming services
+
+/** Your services as { id, name, logo }, names from the cached catalog when known. */
+function myServiceList() {
+  const ids = state.settings.services;
+  if (!ids.length) return [];
+  const cat = catalogFor(userRegion()) || [];
+  return ids.map((id) => cat.find((p) => p.id === id) || { id, name: `Service ${id}`, logo: null });
+}
+
+/** Logos of your services a title streams on, for a card. null when none or not checked. */
+function serviceStrip(m) {
+  const region = userRegion();
+  if (!state.settings.services.length || !region) return null;
+  const on = onMyServices(m.id, region, state.settings.services);
+  if (!on?.length) return null;
+  return h("span", { class: "svc-strip", title: `Streaming on ${on.map((p) => p.name).join(", ")}` },
+    on.slice(0, 3).map((p) => p.logo
+      ? h("img", { src: `https://image.tmdb.org/t/p/w92${p.logo}`, alt: "", loading: "lazy", referrerpolicy: "no-referrer" })
+      : h("span", { class: "svc-initial", text: p.name.slice(0, 1) })),
+    h("span", { class: "svc-name", text: on.length === 1 ? on[0].name : `${on[0].name} +${on.length - 1}` }));
+}
+
+let availTimer = null;
+/** Checks watchlist titles against your services in the background, then re-renders. */
+function scheduleAvailability(titles) {
+  const region = userRegion();
+  if (!tmdbReady || !region || !state.settings.services.length) return;
+  clearTimeout(availTimer);
+  availTimer = setTimeout(() => {
+    refreshAvailability(titles, region, () => { if (state.view === "watchlist" && !state.search.query) render({ drawer: false }); });
+  }, 600);
+}
+
 function renderWatchlist() {
-  const { upNext: u, soon, out, soonDate } = watchlistSections();
+  let { upNext: u, soon, out, soonDate } = watchlistSections();
   if (!u.length && !soon.length && !out.length) {
     return emptyState("Nothing queued", "Search above and add films or shows to your watchlist.", focusSearchButton());
+  }
+  let chip = null;
+  const region = userRegion();
+  if (state.settings.services.length && region && tmdbReady) {
+    const all = [...soon, ...u, ...out];
+    scheduleAvailability(all);
+    const isOn = (m) => Boolean(onMyServices(m.id, region, state.settings.services)?.length);
+    const n = all.filter(isOn).length;
+    const pending = all.some((m) => m.mediaType !== "custom" && onMyServices(m.id, region, state.settings.services) === undefined);
+    chip = h("div", { class: "filter-row" },
+      h("button", {
+        type: "button", class: `filter-chip svc-chip${state.svcOnly ? " on" : ""}`, "aria-pressed": String(state.svcOnly),
+        onclick: () => { state.svcOnly = !state.svcOnly; render(); },
+      }, icon("tv"), `On my services · ${n}${pending ? "…" : ""}`, state.svcOnly ? icon("x") : null));
+    if (state.svcOnly) {
+      soon = soon.filter(isOn); u = u.filter(isOn); out = out.filter(isOn);
+      if (!u.length && !soon.length && !out.length) {
+        return h("div", {}, chip, emptyState(pending ? "Checking…" : "Nothing streaming", pending
+          ? "Checking which titles are on your services."
+          : "None of your watchlist is on your services right now. Discover has an \u201cOn your services\u201d row."));
+      }
+    }
   }
   const section = (title, sub, cards) => h("section", { class: "wl-section" },
     h("div", { class: "wl-head" }, h("h2", { class: "wl-title", text: title }), sub ? h("span", { class: "micro", text: sub }) : null),
     h("div", { class: "grid" }, cards));
-  return h("div", {},
+  return h("div", {}, chip,
     soon.length ? section("Coming soon", null, soon.map((m) => {
       const caughtUp = m.mediaType === "tv" && tvState(m) === "caughtup";
       return libraryCard(m, {
         badge: whenLabel(soonDate(m) === "9999" ? null : soonDate(m)),
         caption: caughtUp && m.nextAirSeason ? `New ${epLabel(m.nextAirSeason, m.nextAirEpisode)}` : null,
+        extra: serviceStrip(m),
       });
     })) : null,
     u.length ? section("Up next", `${u.length} show${u.length === 1 ? "" : "s"} in progress`, u.map(upNextCard)) : null,
     out.length ? section(soon.length || u.length ? "Out now" : "Watchlist", null,
-      out.map((m) => libraryCard(m, { badge: m.mediaType !== "tv" && isNew(m.releaseDate) ? "NEW" : null }))) : null);
+      out.map((m) => libraryCard(m, { badge: m.mediaType !== "tv" && isNew(m.releaseDate) ? "NEW" : null, extra: serviceStrip(m) }))) : null);
 }
 
 /** Re-renders the current view. { drawer: false } leaves an open drawer untouched (background updates). */
@@ -1317,7 +1377,7 @@ function providersSection(movie) {
     let p = providerCache.get(movie.id);
     if (!(p instanceof Promise)) {
       p = fetchProviders(movie, region)
-        .then((data) => { providerCache.set(movie.id, data); return data; })
+        .then((data) => { providerCache.set(movie.id, data); recordAvailability(movie.id, region, data); return data; })
         .catch((err) => { providerCache.delete(movie.id); throw err; });
       providerCache.set(movie.id, p);
     }
@@ -1335,7 +1395,10 @@ function fillProviders(section, data, region) {
   const head = h("div", { class: "rel-head" },
     h("span", { class: "micro", text: `Where to watch in ${regionLabel(region)}` }),
     data?.link ? h("a", { class: "micro link", href: data.link, target: "_blank", rel: "noopener noreferrer", text: "All options ↗" }) : null);
-  const groups = data ? [["Stream", data.stream], ["Rent", data.rent], ["Buy", data.buy]].filter(([, list]) => list.length) : [];
+  // Your services first in the Stream row, and highlighted.
+  const mine = new Set(state.settings.services);
+  const stream = data ? [...data.stream].sort((a, b) => mine.has(b.id) - mine.has(a.id)) : [];
+  const groups = data ? [["Stream", stream], ["Rent", data.rent], ["Buy", data.buy]].filter(([, list]) => list.length) : [];
   const credit = h("p", { class: "provider-credit" }, "Availability by ",
     h("a", { href: "https://www.justwatch.com/", target: "_blank", rel: "noopener noreferrer", text: "JustWatch" }), " via TMDB.");
   if (!groups.length) {
@@ -1347,7 +1410,7 @@ function fillProviders(section, data, region) {
       h("span", { class: "provider-label mono", text: label }),
       h("ul", { class: "provider-list" }, list.slice(0, 10).map((p) => h("li", {},
         h(data.link ? "a" : "span", {
-          class: "provider", title: p.name,
+          class: `provider${label === "Stream" && mine.has(p.id) ? " provider-mine" : ""}`, title: mine.has(p.id) && label === "Stream" ? `${p.name} — one of your services` : p.name,
           ...(data.link ? { href: data.link, target: "_blank", rel: "noopener noreferrer" } : {}),
         },
           p.logo ? h("img", { src: `https://image.tmdb.org/t/p/w92${p.logo}`, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("span", { class: "provider-initial", text: p.name.slice(0, 1) }),
@@ -1455,7 +1518,11 @@ function regionName(code) {
 }
 
 function applySettings(next) {
-  state.settings = { region: next?.region || null, thaiOriginals: next?.thaiOriginals === true };
+  state.settings = {
+    region: next?.region || null,
+    thaiOriginals: next?.thaiOriginals === true,
+    services: Array.isArray(next?.services) ? next.services : [],
+  };
   setRegionOverride(state.settings.region);
   setThaiOriginals(state.settings.thaiOriginals);
 }
@@ -1482,6 +1549,11 @@ async function saveSettings(patch) {
       if (m.mediaType === "custom") continue;
       if (m.inWatchlist || m.mediaType === "tv" || (m.releaseDate && m.releaseDate >= addDays(today, -30))) { forceMeta.add(m.id); metaTried.delete(m.id); }
     }
+  }
+  if (prev.region !== next.region && $("#settings-dialog").open) renderSettings(); // service list is per country
+  if (String(prev.services) !== String(next.services)) {
+    state.discover.lastAuto = 0; // let Discover fetch the "On your services" row right away
+    if (!next.services.length) state.svcOnly = false;
   }
   if (prev.thaiOriginals !== next.thaiOriginals) {
     for (const m of state.movies.values()) if (m.origLang === "th") { forceMeta.add(m.id); metaTried.delete(m.id); }
@@ -1532,6 +1604,8 @@ function renderSettings() {
       h("label", { class: "field-label", for: "set-region", text: "Country" }), select,
       h("p", { class: "hint", id: "set-region-hint", text: "Used for release dates, Coming soon, Where to watch and Discover." + (synced ? " Synced to your account." : "") })),
 
+    servicesSection(),
+
     h("section", { class: "panel set-section" },
       h("span", { class: "micro panel-label", text: "Language" }),
       h("label", { class: "check-row", for: "set-thai" }, thai,
@@ -1564,13 +1638,63 @@ function renderSettings() {
         h("a", { href: "https://www.justwatch.com/", target: "_blank", rel: "noopener noreferrer", text: "JustWatch" }), ".")));
 }
 
+const POPULAR_SERVICES = 18;
+
+function servicesSection() {
+  const region = userRegion();
+  const sec = h("section", { class: "panel set-section", "aria-labelledby": "set-svc-label" },
+    h("span", { class: "micro panel-label", id: "set-svc-label", text: "My streaming services" }));
+  if (!tmdbReady || !region) {
+    sec.append(h("p", { class: "hint", text: !tmdbReady ? "Needs a TMDB token." : "Pick a country above first." }));
+    return sec;
+  }
+  const catalog = catalogFor(region);
+  if (!catalog) {
+    sec.append(h("p", { class: "hint", text: "Loading services…" }));
+    loadCatalog(region)
+      .then(() => { if ($("#settings-dialog").open) renderSettings(); })
+      .catch(() => { if (sec.isConnected) sec.querySelector(".hint").textContent = "Couldn't load services. Check your connection."; });
+    return sec;
+  }
+  const mine = new Set(state.settings.services);
+  const shown = state.showAllServices ? catalog : catalog.filter((p, i) => i < POPULAR_SERVICES || mine.has(p.id));
+  const chips = h("div", { class: "svc-grid", role: "group", "aria-label": "Your streaming services" },
+    shown.map((p) => {
+      const b = h("button", { type: "button", class: "svc-pick", "aria-pressed": String(mine.has(p.id)), title: p.name },
+        p.logo ? h("img", { src: `https://image.tmdb.org/t/p/w92${p.logo}`, alt: "", loading: "lazy", referrerpolicy: "no-referrer" })
+          : h("span", { class: "svc-initial", text: p.name.slice(0, 1) }),
+        h("span", { class: "svc-pick-name", text: p.name }));
+      b.addEventListener("click", () => {
+        const on = b.getAttribute("aria-pressed") !== "true";
+        b.setAttribute("aria-pressed", String(on));
+        const ids = state.settings.services.filter((x) => x !== p.id);
+        if (on) ids.push(p.id);
+        saveSettings({ services: ids }).catch(() => {});
+        const count = sec.querySelector(".svc-count");
+        if (count) count.textContent = countText(ids.length);
+      });
+      return b;
+    }));
+  const countText = (n) => n ? `${n} selected — marked on Watchlist cards, and an \u201cOn your services\u201d row in Discover.` : "Tap the ones you pay for (or watch free).";
+  sec.append(...[
+    chips,
+    catalog.length > POPULAR_SERVICES
+      ? h("button", { type: "button", class: "btn btn-sm btn-ghost", onclick: () => { state.showAllServices = !state.showAllServices; renderSettings(); } },
+        state.showAllServices ? "Show popular only" : `Show all ${catalog.length}`)
+      : null,
+    h("p", { class: "hint svc-count", text: countText(mine.size) }),
+    h("p", { class: "hint", text: `Services available in ${regionLabel(region)}. Availability by JustWatch via TMDB.` }),
+  ].filter(Boolean));
+  return sec;
+}
+
 // ---------------------------------------------------------------- discover
 
 function discoverView() {
   const d = state.discover;
   if (!d.data) d.data = cachedSources();
   // Auto-refresh at most every 10 minutes, even if the cache can't be saved on this device.
-  if (!d.loading && tmdbReady && !cacheIsFresh(state.movies) && Date.now() - (d.lastAuto || 0) > 600000) {
+  if (!d.loading && tmdbReady && !cacheIsFresh(state.movies, state.settings.services) && Date.now() - (d.lastAuto || 0) > 600000) {
     d.lastAuto = Date.now();
     refreshDiscover();
   }
@@ -1583,6 +1707,7 @@ function discoverView() {
     add: (r) => saveMovie(fromResult(r, { inWatchlist: true }), { isNew: true })
       .then(() => toast(`Added “${r.title}” to your watchlist`)).catch(() => {}),
     hide: (r) => hideTitle(r).catch(() => {}),
+    services: myServiceList(),
   });
 }
 
@@ -1593,7 +1718,7 @@ async function refreshDiscover() {
   d.error = null;
   if (state.view === "discover" && !state.search.query) render({ drawer: false });
   try {
-    d.data = await refreshSources(state.movies);
+    d.data = await refreshSources(state.movies, state.settings.services);
   } catch (err) {
     console.error(err);
     d.error = "Couldn't reach TMDB. Try ↻ Refresh in a moment.";

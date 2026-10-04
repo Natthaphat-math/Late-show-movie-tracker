@@ -278,6 +278,43 @@ export async function fetchProviders(movie, region) {
   };
 }
 
+/**
+ * Every streaming service TMDB knows in a region (films + TV merged), most popular first:
+ * [{ id, name, logo }].
+ */
+export async function fetchServiceCatalog(region) {
+  if (!token) throw new Error("TMDB token missing.");
+  const get = async (kind) => {
+    const res = await fetch(`${API}/watch/providers/${kind}?watch_region=${encodeURIComponent(region)}`, { headers: headers() });
+    if (!res.ok) throw new Error(`TMDB service list failed (${res.status}).`);
+    const d = await res.json();
+    return Array.isArray(d.results) ? d.results : [];
+  };
+  const [movie, tv] = await Promise.all([get("movie"), get("tv").catch(() => [])]);
+  const byId = new Map();
+  for (const p of [...movie, ...tv]) {
+    if (!Number.isInteger(p.provider_id) || typeof p.provider_name !== "string") continue;
+    const prio = p.display_priorities?.[region] ?? p.display_priority ?? 999;
+    const cur = byId.get(p.provider_id);
+    if (!cur || prio < cur.prio) {
+      byId.set(p.provider_id, {
+        id: p.provider_id,
+        name: p.provider_name.slice(0, 80),
+        logo: typeof p.logo_path === "string" && POSTER_PATH_RE.test(p.logo_path) ? p.logo_path : null,
+        prio,
+      });
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.prio - b.prio || a.name.localeCompare(b.name)).map(({ prio, ...p }) => p);
+}
+
+/** Popular titles streaming on any of the given services in a region (subscription, free or with ads). */
+export function fetchOnServices(kind, serviceIds, region) {
+  const ids = encodeURIComponent(serviceIds.join("|"));
+  const types = encodeURIComponent("flatrate|free|ads");
+  return getList(`/discover/${kind}?with_watch_providers=${ids}&watch_region=${encodeURIComponent(region)}&with_watch_monetization_types=${types}&sort_by=popularity.desc&vote_count.gte=50&include_adult=false&page=1`, kind);
+}
+
 // ---------------------------------------------------------------- Discover sources
 
 async function getList(path, kind = null) {

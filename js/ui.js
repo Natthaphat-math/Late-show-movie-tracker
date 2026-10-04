@@ -146,7 +146,7 @@ export function kindBadge(mediaType) {
  * opts.rank: number badge (ranked lists) · opts.badge: corner tag text ("in 12 days", "NEW")
  * · opts.caption: extra line under the title ("Up next S2 · E5").
  */
-export function libraryCard(movie, { rank = null, badge = null, caption = null } = {}) {
+export function libraryCard(movie, { rank = null, badge = null, caption = null, extra = null } = {}) {
   const card = h("article", { class: "card", dataset: { id: movie.id } });
   const open = h("button", { type: "button", class: "card-open", dataset: { action: "open", id: movie.id }, "aria-label": `Open ${movie.title}` });
   card.append(
@@ -157,7 +157,8 @@ export function libraryCard(movie, { rank = null, badge = null, caption = null }
     h("div", { class: "card-meta" },
       h("h3", { class: "card-title", text: movie.title }),
       caption ? h("span", { class: "card-caption mono", text: caption }) : null,
-      statusLeds(movie)),
+      statusLeds(movie),
+      extra),
     open,
   );
   return card;

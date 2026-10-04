@@ -833,6 +833,7 @@ a.provider:hover { box-shadow: 2px 2px 0 var(--shadow); }
 .provider img, .provider-initial { width: 30px; height: 30px; border-radius: 7px; flex: none; }
 .provider-initial { display: grid; place-items: center; background: var(--surface-2); font-weight: 900; }
 .provider-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-mine { border-color: var(--hero); box-shadow: 2px 2px 0 var(--hero); }
 .provider-credit { font-size: 11.5px; color: var(--text-soft); }
 .provider-credit a { color: inherit; }
 
@@ -1184,3 +1185,21 @@ select {
   *, *::before, *::after { transition: none !important; animation: none !important; }
   .btn:hover, .btn:active, .card:hover, .card:focus-within, .icon-btn:active, .swatch[aria-checked="true"], .owner-btn:active { transform: none; }
 }
+
+/* ---------------------------------------------------------------- my streaming services */
+
+.svc-strip { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.svc-strip img, .svc-strip .svc-initial { width: 20px; height: 20px; border-radius: 5px; flex: none; border: 1.5px solid var(--line); }
+.svc-initial { display: grid; place-items: center; background: var(--surface-2); font-size: 11px; font-weight: 900; }
+.svc-name { font-size: 11.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); }
+.svc-chip.on { background: var(--hero); color: var(--on-color); }
+.svc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; }
+.svc-pick {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 7px 9px; text-align: left;
+  font: inherit; font-size: 13px; font-weight: 700; color: var(--text);
+  background: var(--field); border: 2px solid var(--line); border-radius: var(--r); cursor: pointer;
+}
+.svc-pick img, .svc-pick .svc-initial { width: 28px; height: 28px; border-radius: 7px; flex: none; }
+.svc-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svc-pick[aria-pressed="true"] { background: var(--hero); color: var(--on-color); box-shadow: 3px 3px 0 var(--shadow); }

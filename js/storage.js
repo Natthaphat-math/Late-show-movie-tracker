@@ -239,6 +239,10 @@ export function normalizeSettings(raw) {
   return {
     region: typeof raw?.region === "string" && /^[A-Z]{2}$/.test(raw.region) ? raw.region : null,
     thaiOriginals: raw?.thaiOriginals === true,
+    // My streaming services: TMDB provider ids.
+    services: Array.isArray(raw?.services)
+      ? [...new Set(raw.services.filter((x) => Number.isInteger(x) && x > 0 && x < 1e7))].slice(0, 50)
+      : [],
   };
 }
 
@@ -530,7 +534,10 @@ export function createFirestoreAdapter(fb, uid) {
       }
     },
     async saveSettings(settings) {
-      await commit(this, fb.setDoc(ref("prefs", "settings"), normalizeSettings(settings)));
+      const doc = normalizeSettings(settings);
+      // Leave "services" out until some are picked, so older rules still accept the document.
+      if (!doc.services.length) delete doc.services;
+      await commit(this, fb.setDoc(ref("prefs", "settings"), doc));
     },
   };
 }

@@ -10,7 +10,7 @@
 // Raw TMDB lists are cached on the phone for the day; scoring re-runs on every render, so
 // adding or hiding a title updates the rows instantly without new requests.
 
-import { fetchRecommendations, fetchTrending, fetchUpcoming, fetchHiddenGems, userRegion } from "./search.js";
+import { fetchRecommendations, fetchTrending, fetchUpcoming, fetchHiddenGems, fetchOnServices, userRegion } from "./search.js";
 import { h, icon, posterSlot, emptyState } from "./ui.js";
 import { episodesWatched, totals } from "./tv.js";
 import { todayISO } from "./storage.js";
@@ -104,10 +104,13 @@ function writeCache(data) {
   try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch {}
 }
 
-/** True when the cached lists are from today, for this region and these seeds. */
-export function cacheIsFresh(movies) {
+const servicesKey = (services) => [...(services || [])].sort((a, b) => a - b).join(",");
+
+/** True when the cached lists are from today, for this region, these seeds and these services. */
+export function cacheIsFresh(movies, services = []) {
   const c = readCache();
   if (!c || c.date !== todayISO() || c.region !== userRegion()) return false;
+  if ((c.servicesKey || "") !== servicesKey(services)) return false;
   const want = pickSeeds(movies).map((s) => s.id).join(",");
   return c.seedKey === want;
 }
@@ -116,21 +119,26 @@ export function cachedSources() {
   return readCache();
 }
 
-/** Fetches every source (≈12 requests). Failures of single sources don't fail the rest. */
-export async function refreshSources(movies) {
+/** Fetches every source (≈14 requests). Failures of single sources don't fail the rest. */
+export async function refreshSources(movies, services = []) {
   const seeds = pickSeeds(movies);
   const region = userRegion();
   const genre = topGenre(movies);
   const safe = (p, fallback) => p.catch((err) => { console.warn("Discover source failed", err); return fallback; });
-  const [recLists, trending, upcoming, gems] = await Promise.all([
+  const onServices = services.length && region
+    ? Promise.all([safe(fetchOnServices("movie", services, region), []), safe(fetchOnServices("tv", services, region), [])])
+    : Promise.resolve([[], []]);
+  const [recLists, trending, upcoming, gems, [svcMovies, svcTv]] = await Promise.all([
     Promise.all(seeds.map((s) => safe(fetchRecommendations(s), []))),
     safe(fetchTrending(), []),
     safe(fetchUpcoming(region), { movies: [], tv: [] }),
     genre !== null ? safe(fetchHiddenGems(genre, TV_GENRES.has(genre) ? "tv" : "movie"), []) : Promise.resolve([]),
+    onServices,
   ]);
   const data = {
     date: todayISO(), region, seedKey: seeds.map((s) => s.id).join(","),
     seeds, recLists, trending, upcoming, gems, gemsGenre: genre,
+    servicesKey: servicesKey(services), onServices: { movies: svcMovies, tv: svcTv },
   };
   writeCache(data);
   return data;
@@ -180,6 +188,32 @@ function spread(list) {
   return result;
 }
 
+/**
+ * "On your services": popular titles on your subscriptions, re-ranked for you — titles your
+ * seeds also recommend come first, then genres you rate highly, then TMDB popularity.
+ */
+function scoreOnServices(data, movies, hidden, kind) {
+  const aff = genreAffinity(movies);
+  const recScore = new Map();
+  data.seeds.forEach((seed, si) => (data.recLists[si] || []).forEach((r, pos) => {
+    recScore.set(r.id, (recScore.get(r.id) || 0) + seed.weight / Math.sqrt(pos + 1));
+  }));
+  const src = data.onServices || { movies: [], tv: [] };
+  const lists = kind === "movie" ? [src.movies] : kind === "tv" ? [src.tv] : [src.movies, src.tv];
+  const seen = new Set();
+  const out = [];
+  for (const list of lists) {
+    list.forEach((r, pos) => {
+      if (seen.has(r.id) || movies.has(r.id) || hidden.has(r.id) || !goodEnough(r)) return;
+      seen.add(r.id);
+      const gs = r.genreIds.filter((g) => aff.has(g));
+      const genre = gs.length ? 0.15 * gs.reduce((s, g) => s + Math.max(-2, Math.min(2, aff.get(g))), 0) / gs.length : 0;
+      out.push({ r, score: 1 / Math.sqrt(pos + 1) + genre + 2 * (recScore.get(r.id) || 0), forYou: recScore.has(r.id) });
+    });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, 20);
+}
+
 function reason(c) {
   const names = c.by.slice(0, 2).map((b) => b.seed.title);
   const verb = c.by[0].seed.rating ? "liked" : "watched";
@@ -189,7 +223,7 @@ function reason(c) {
 // ---------------------------------------------------------------- rendering
 
 /**
- * hooks: { open(r), add(r), hide(r), refresh(), loading, error }
+ * hooks: { open(r), add(r), hide(r), refresh(), loading, error, services: [{ id, name }] }
  * kind: "all" | "movie" | "tv"
  */
 export function renderDiscover(data, movies, hidden, kind, hooks) {
@@ -218,6 +252,14 @@ export function renderDiscover(data, movies, hidden, kind, hooks) {
     rows.push(h("div", { class: "disc-cold panel" },
       h("span", { class: "micro panel-label", text: "Picked for you" }),
       h("p", { text: `Rate or watch a few more titles to get personal picks — ${data.seeds.length} of ${MIN_SEEDS} so far.` })));
+  }
+
+  const mine = hooks.services || [];
+  if (mine.length && data.onServices) {
+    const items = scoreOnServices(data, movies, hidden, kind);
+    const names = mine.map((p) => p.name);
+    const sub = names.length <= 3 ? names.join(" · ") : `${names.slice(0, 2).join(" · ")} +${names.length - 2}`;
+    if (items.length) rows.splice(personal ? 1 : 0, 0, row("On your services", sub, items.map((c) => ({ r: c.r, note: c.forYou ? "Matches your taste" : null })), hooks));
   }
 
   const trending = data.trending.filter(keep).slice(0, 20);
