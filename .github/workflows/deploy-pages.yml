@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p _site/js
-          cp index.html manifest.webmanifest _site/
+          cp index.html manifest.webmanifest sw.js _site/
           cp -r css icons _site/
           # Copy JS modules, but never the template or any local config.
           find js -maxdepth 1 -name '*.js' ! -name 'config.example.js' ! -name 'config.js' -exec cp {} _site/js/ \;
@@ -57,6 +57,7 @@ jobs:
           sed -i -E "s#(href=\"css/[a-z-]+\.css)\"#\1?v=$v\"#g; s#(src=\"js/[a-z-]+\.js)\"#\1?v=$v\"#g" _site/index.html
           sed -i -E "s#(from \"\./[a-z-]+\.js)\"#\1?v=$v\"#g; s#(import\(\"\./[a-z-]+\.js)\"\)#\1?v=$v\")#g" _site/js/*.js
           grep -o 'styles.css?v=[a-f0-9]*\|app.js?v=[a-f0-9]*' _site/index.html
+          sed -i "s/__BUILD__/$v/" _site/sw.js
 
       - name: Write js/config.js from secrets
         if: steps.check.outputs.present == 'true'
@@ -107,6 +108,7 @@ jobs:
           test -f _site/index.html
           test -f _site/css/styles.css
           test -f _site/manifest.webmanifest
+          test -f _site/sw.js
           test -f _site/icons/apple-touch-icon.png
           test -f _site/js/app.js || { echo "::error::js/app.js not found — copy the app files into the repo root first."; exit 1; }
           ls -R _site

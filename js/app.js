@@ -45,6 +45,7 @@ const state = {
   owner: null,  // signed-in owner user
   review: null, // { queue: [{ id, rating }], i } — one-by-one detail pass after batch add
   editing: null, // { id, idx } — watch entry being edited in the drawer
+  booting: false, // owner device opening for the first time: waiting for the cloud library
   genre: null,   // TMDB genre id filtering the Watched grid (set from the Stats page)
   lists: [],     // custom lists, in creation order
   listId: null,  // list open in the Lists view (null = the shelf)
@@ -68,12 +69,28 @@ async function boot() {
   }
   wireEvents();
   initBatch({ getMovie: (id) => state.movies.get(id), getLists: () => state.lists, apply: applyBatch, startReview });
-  await useAdapter(localStorageAdapter);
+  registerServiceWorker();
 
-  if (ownerModeAvailable()) {
+  const ownerDevice = ownerModeAvailable() && fire.shouldAutoLoadFirebase();
+  if (ownerDevice) {
     $("#owner-btn").hidden = false;
-    if (fire.shouldAutoLoadFirebase()) startFirebase().catch(firebaseFailed);
+    const snap = readSnapshot();
+    if (snap && Array.isArray(snap.movies)) {
+      await useAdapter(snapshotAdapter(snap)); // last-known cloud library, instantly
+    } else {
+      state.booting = true; // first open on this device: a loader, never a false "Nothing queued"
+      render();
+    }
+    startFirebase().catch(firebaseFailed);
+    return;
   }
+  await useAdapter(localStorageAdapter);
+  if (ownerModeAvailable()) $("#owner-btn").hidden = false;
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.register("sw.js").catch((err) => console.warn("Offline files unavailable", err));
 }
 
 function ownerModeAvailable() {
@@ -90,37 +107,87 @@ function track(promise) {
   return promise.finally(() => { pendingWrites--; renderSync(); });
 }
 
-/** Wraps the Firestore adapter so every write shows on the owner pill until the server confirms it. */
+/**
+ * Hooks the Firestore adapter so every write shows on the owner pill until the server confirms
+ * it (writes made offline stay counted until they upload), and late failures are reported.
+ */
 function withSyncTracking(adapter) {
   if (adapter.name !== "firestore" || adapter.tracked) return adapter;
-  return {
-    name: adapter.name,
-    tracked: true,
-    get metaBlocked() { return adapter.metaBlocked; },
-    getMovies: () => adapter.getMovies(),
-    addMovie: (m) => track(adapter.addMovie(m)),
-    updateMovie: (m) => track(adapter.updateMovie(m)),
-    removeMovie: (id) => track(adapter.removeMovie(id)),
-    getLists: () => adapter.getLists(),
-    getPrefs: () => adapter.getPrefs(),
-    getSettings: () => adapter.getSettings(),
-    saveSettings: (x) => track(adapter.saveSettings(x)),
-    get settingsBlocked() { return adapter.settingsBlocked; },
-    savePrefs: (p) => track(adapter.savePrefs(p)),
-    get prefsBlocked() { return adapter.prefsBlocked; },
-    saveList: (l) => track(adapter.saveList(l)),
-    removeList: (id) => track(adapter.removeList(id)),
-    get listsBlocked() { return adapter.listsBlocked; },
+  adapter.tracked = true;
+  adapter.onWrite = (p) => { track(p).catch(() => {}); };
+  adapter.onLateError = (err) => {
+    console.error(err);
+    toast(err?.code === "permission-denied" ? "A change was rejected by the Firestore rules — publish the latest rules." : "A queued change couldn't be saved. Reopen the app to retry.", "error");
   };
+  return adapter;
 }
 
 function renderSync() {
   const btn = $("#owner-btn");
   if (btn.dataset.mode !== "on") return;
   const busy = pendingWrites > 0;
-  btn.dataset.sync = busy ? "busy" : "idle";
-  btn.querySelector(".owner-label").textContent = busy ? "Saving…" : "Owner";
-  btn.title = busy ? "Saving to the cloud — keep the app open" : `Signed in as ${state.owner?.email || "owner"} · all changes saved`;
+  const offline = navigator.onLine === false;
+  btn.dataset.sync = busy ? "busy" : offline ? "offline" : "idle";
+  btn.querySelector(".owner-label").textContent = offline ? (busy ? `Offline · ${pendingWrites} waiting` : "Offline") : busy ? "Saving…" : "Owner";
+  btn.title = offline
+    ? "No connection. Changes are kept on this phone and upload when you're back online."
+    : busy ? "Saving to the cloud…" : `Signed in as ${state.owner?.email || "owner"} · all changes saved`;
+}
+
+// ---- instant start: a copy of the cloud library kept on this phone, shown while Firebase loads.
+const SNAPSHOT_KEY = "movieTracker.cloudSnapshot.v1";
+let snapshotTimer = null;
+
+function readSnapshot() {
+  try { return JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || "null"); } catch { return null; }
+}
+
+function scheduleSnapshot() {
+  if (state.adapter.name !== "firestore" || state.adapter.deferred || !state.owner) return;
+  clearTimeout(snapshotTimer);
+  snapshotTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({
+        uid: state.owner.uid, savedAt: Date.now(),
+        movies: [...state.movies.values()], lists: state.lists, prefs: state.prefs, settings: state.settings,
+      }));
+    } catch (err) {
+      console.warn("Couldn't save the offline snapshot", err); // storage full: start-up just shows the loader
+    }
+  }, 800);
+}
+
+function clearSnapshot() {
+  try { localStorage.removeItem(SNAPSHOT_KEY); } catch {}
+}
+
+/**
+ * Stand-in adapter for the moment between opening the app and Firebase being ready: reads come
+ * from the snapshot, writes wait for the real cloud adapter.
+ */
+let cloudReady = null;
+function snapshotAdapter(snap) {
+  let resolve, reject;
+  cloudReady = new Promise((res, rej) => { resolve = res; reject = rej; });
+  cloudReady.catch(() => {});
+  cloudReady.resolve = resolve;
+  cloudReady.reject = reject;
+  const later = (fn) => async (...args) => fn(await cloudReady, ...args);
+  return {
+    name: "firestore",
+    deferred: true,
+    getMovies: async () => (snap.movies || []).map(normalizeMovie).filter(Boolean),
+    getLists: async () => (snap.lists || []).map(normalizeList).filter(Boolean),
+    getPrefs: async () => snap.prefs || { hidden: [] },
+    getSettings: async () => snap.settings || null,
+    addMovie: later((a, m) => a.addMovie(m)),
+    updateMovie: later((a, m) => a.updateMovie(m)),
+    removeMovie: later((a, id) => a.removeMovie(id)),
+    saveList: later((a, l) => a.saveList(l)),
+    removeList: later((a, id) => a.removeList(id)),
+    savePrefs: later((a, p) => a.savePrefs(p)),
+    saveSettings: later((a, x) => a.saveSettings(x)),
+  };
 }
 
 async function useAdapter(adapter) {
@@ -223,8 +290,16 @@ function startFirebase() {
 function firebaseFailed(err) {
   console.error(err);
   firebaseStarted = null;
+  cloudReady?.reject(err);
+  if (state.adapter.deferred) {
+    // Showing the saved copy: keep it on screen (read-only) rather than an empty local library.
+    setOwnerButton("on");
+    toast("Can't reach the cloud — showing your saved copy. Changes need a connection.", "error");
+    return;
+  }
   setOwnerButton("off");
   toast("Couldn't reach Firebase. Staying in local mode.", "error");
+  if (state.booting) { state.booting = false; useAdapter(localStorageAdapter); }
 }
 
 async function handleAuth(user) {
@@ -235,10 +310,16 @@ async function handleAuth(user) {
     setOwnerButton("on");
     if ($("#signin-dialog").open) $("#signin-dialog").close();
     const fb = await fire.loadFirebase(state.config.FIREBASE_CONFIG);
+    const snap = readSnapshot();
+    if (snap && snap.uid !== user.uid) clearSnapshot();
+    const cloud = withSyncTracking(createFirestoreAdapter(fb, user.uid));
+    cloudReady?.resolve(cloud); // writes made while the snapshot was showing go through now
+    state.booting = false; // the next render shows the cloud library instead of the loader
     try {
-      await useAdapter(createFirestoreAdapter(fb, user.uid));
+      await useAdapter(cloud);
     } catch (err) {
       console.error(err);
+      render();
       toast("Firestore refused access — check your security rules.", "error");
       return;
     }
@@ -252,6 +333,9 @@ async function handleAuth(user) {
     const wasOwner = Boolean(state.owner);
     state.owner = null;
     fire.markOwnerDevice(false);
+    clearSnapshot();
+    cloudReady?.reject(new Error("signed out"));
+    state.booting = false;
     setOwnerButton("off");
     if (wasOwner || state.adapter.name !== "local") await useAdapter(localStorageAdapter);
   }
@@ -287,7 +371,7 @@ function setOwnerButton(mode) {
   const btn = $("#owner-btn");
   btn.dataset.mode = mode;
   const label = btn.querySelector(".owner-label");
-  label.textContent = mode === "on" ? "Owner" : mode === "loading" ? "Linking…" : "Local";
+  label.textContent = mode === "on" ? "Owner" : mode === "loading" ? "Connecting…" : "Local";
   btn.setAttribute("aria-label", mode === "on" ? "Signed in as owner — sign out" : "Local mode — owner sign-in");
   btn.title = mode === "on" ? `Signed in as ${state.owner?.email || "owner"}` : "Data saved in this browser. Owner? Sign in.";
   if (mode === "on") renderSync(); else delete btn.dataset.sync;
@@ -568,6 +652,7 @@ function renderWatchlist() {
 
 /** Re-renders the current view. { drawer: false } leaves an open drawer untouched (background updates). */
 function render({ drawer = true } = {}) {
+  scheduleSnapshot();
   const inSearch = Boolean(state.search.query);
   const counts = { watchlist: listFor("watchlist").length, watched: listFor("watched").length };
   document.querySelectorAll("[data-count]").forEach((el) => (el.textContent = counts[el.dataset.count]));
@@ -592,7 +677,8 @@ function render({ drawer = true } = {}) {
     $("#view-title").textContent = openList ? `${openList.emoji ? openList.emoji + " " : ""}${openList.name}` : meta.title;
     renderSort(sortEl);
     view.replaceChildren(
-      state.view === "stats" ? renderStats()
+      state.booting ? h("div", { class: "booting" }, h("span", { class: "led led-on booting-led", "aria-hidden": "true" }), h("p", { class: "micro", text: "Tuning in to your library…" }))
+        : state.view === "stats" ? renderStats()
         : state.view === "discover" ? discoverView()
         : state.view === "lists" ? (openList ? listDetail(openList, state.movies) : listShelf(state.lists, state.movies))
         : renderGrid(state.view));
@@ -1837,6 +1923,8 @@ function wireEvents() {
     if (b) applyTheme(b.dataset.themePick);
   });
   $("#settings-btn").addEventListener("click", openSettings);
+  window.addEventListener("online", renderSync);
+  window.addEventListener("offline", renderSync);
   $("#owner-btn").addEventListener("click", onOwnerButton);
   $("#signin-form").addEventListener("submit", onSignInSubmit);
   $("#paste-form").addEventListener("submit", onPasteSubmit);

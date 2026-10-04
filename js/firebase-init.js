@@ -26,9 +26,18 @@ export async function loadFirebase(config) {
     import(`${SDK}/firebase-firestore.js`),
   ]);
   const appInst = app.initializeApp(config);
+  // Offline support: Firestore keeps a copy of your data and any unsent changes in IndexedDB,
+  // so the library works without signal and queued edits upload on the next connection.
+  let db;
+  try {
+    db = fs.initializeFirestore(appInst, { localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }) });
+  } catch (err) {
+    console.warn("Offline cache unavailable, using memory cache", err);
+    db = fs.getFirestore(appInst);
+  }
   fb = {
     auth: auth.getAuth(appInst),
-    db: fs.getFirestore(appInst),
+    db,
     authMod: auth,
     // Firestore functions handed to createFirestoreAdapter():
     collection: fs.collection,

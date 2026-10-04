@@ -446,6 +446,19 @@ export function createFirestoreAdapter(fb, uid) {
     return d;
   };
 
+  // Writes are applied to Firestore's local cache at once; the returned promise only settles when
+  // the server confirms. Offline that can take hours, so callers continue after a short wait and
+  // the write keeps going in the background (reported through onWrite / onLateError).
+  const commit = (adapter, p) => {
+    adapter.onWrite?.(p);
+    let settled = false;
+    p.then(() => { settled = true; }, (err) => { if (settled === "timeout") adapter.onLateError?.(err); settled = true; });
+    return Promise.race([
+      p,
+      new Promise((resolve) => setTimeout(() => { if (!settled) settled = "timeout"; resolve(); }, 1500)),
+    ]);
+  };
+
   return {
     name: "firestore",
     metaBlocked: false, // true once the rules have rejected meta fields: stop sending them
@@ -457,21 +470,21 @@ export function createFirestoreAdapter(fb, uid) {
       const m = normalizeMovie(movie);
       if (!m) throw new Error("Invalid movie");
       const hasAnyMeta = META_KEYS.some((k) => m[k] !== null && !(k === "genres" && m.mediaType === "custom"));
-      if (!hasAnyMeta || this.metaBlocked) return fb.setDoc(ref("movies", m.id), toDoc(m, false));
+      if (!hasAnyMeta || this.metaBlocked) return commit(this, fb.setDoc(ref("movies", m.id), toDoc(m, false)));
       try {
-        await fb.setDoc(ref("movies", m.id), toDoc(m, true));
+        await commit(this, fb.setDoc(ref("movies", m.id), toDoc(m, true)));
       } catch (err) {
         if (err?.code !== "permission-denied" || m.mediaType !== "movie") throw err;
         // Rules predate the stats fields: save without them and remember.
         this.metaBlocked = true;
-        await fb.setDoc(ref("movies", m.id), toDoc(m, false));
+        await commit(this, fb.setDoc(ref("movies", m.id), toDoc(m, false)));
       }
     },
     async updateMovie(movie) {
       return this.addMovie(movie);
     },
     async removeMovie(id) {
-      await fb.deleteDoc(ref("movies", id));
+      await commit(this, fb.deleteDoc(ref("movies", id)));
     },
     async getLists() {
       try {
@@ -488,10 +501,10 @@ export function createFirestoreAdapter(fb, uid) {
       const d = { ...l };
       delete d.id;
       if (d.emoji === null) delete d.emoji;
-      await fb.setDoc(ref("lists", l.id), d);
+      await commit(this, fb.setDoc(ref("lists", l.id), d));
     },
     async removeList(id) {
-      await fb.deleteDoc(ref("lists", id));
+      await commit(this, fb.deleteDoc(ref("lists", id)));
     },
     // users/{uid}/prefs/discover
     async getPrefs() {
@@ -504,7 +517,7 @@ export function createFirestoreAdapter(fb, uid) {
       }
     },
     async savePrefs(prefs) {
-      await fb.setDoc(ref("prefs", "discover"), normalizePrefs(prefs));
+      await commit(this, fb.setDoc(ref("prefs", "discover"), normalizePrefs(prefs)));
     },
     // users/{uid}/prefs/settings
     async getSettings() {
@@ -517,7 +530,7 @@ export function createFirestoreAdapter(fb, uid) {
       }
     },
     async saveSettings(settings) {
-      await fb.setDoc(ref("prefs", "settings"), normalizeSettings(settings));
+      await commit(this, fb.setDoc(ref("prefs", "settings"), normalizeSettings(settings)));
     },
   };
 }
