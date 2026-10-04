@@ -27,6 +27,8 @@ import { initBatch, openBatch } from "./batch.js";
 const $ = (sel) => document.querySelector(sel);
 const THEME_KEY = "movieTracker.theme";
 const LAST_EXPORT_KEY = "movieTracker.lastExport";
+const TRASH_KEY = "movieTracker.recentlyRemoved.v1";
+const TRASH_MAX = 30;
 const MERGED_KEY = (uid) => `movieTracker.mergedLocal.${uid}`;
 const THEMES = ["marquee", "matinee", "arcade", "drivein"];
 
@@ -489,6 +491,8 @@ async function saveMovie(movie, { isNew = false } = {}) {
 }
 
 async function deleteMovie(id) {
+  const removed = state.movies.get(id);
+  const inLists = state.lists.filter((l) => l.items.includes(id)).map((l) => l.id);
   try {
     await state.adapter.removeMovie(id);
   } catch (err) {
@@ -500,7 +504,65 @@ async function deleteMovie(id) {
   for (const l of state.lists.filter((x) => x.items.includes(id))) {
     await saveList({ ...l, items: l.items.filter((x) => x !== id) }).catch(() => {});
   }
+  if (removed) rememberRemoved(removed, inLists);
   render();
+}
+
+// ---------------------------------------------------------------- recently removed (this device)
+
+function readTrash() {
+  try {
+    const v = JSON.parse(localStorage.getItem(TRASH_KEY) || "[]");
+    return Array.isArray(v) ? v.filter((x) => x && x.movie && typeof x.movie.id === "string") : [];
+  } catch { return []; }
+}
+
+function writeTrash(items) {
+  try { localStorage.setItem(TRASH_KEY, JSON.stringify(items.slice(0, TRASH_MAX))); } catch {}
+}
+
+function rememberRemoved(movie, lists) {
+  writeTrash([{ movie, lists, at: new Date().toISOString() }, ...readTrash().filter((x) => x.movie.id !== movie.id)]);
+}
+
+async function restoreRemoved(id) {
+  const item = readTrash().find((x) => x.movie.id === id);
+  if (!item) return;
+  if (!state.movies.has(id)) {
+    let m;
+    try { m = normalizeMovie(item.movie); } catch { m = null; }
+    if (!m) { toast("Couldn't restore that title.", "error"); return; }
+    await saveMovie(m, { isNew: true });
+    for (const l of state.lists.filter((x) => (item.lists || []).includes(x.id) && !x.items.includes(id))) {
+      await saveList({ ...l, items: [...l.items, id] }).catch(() => {});
+    }
+  }
+  writeTrash(readTrash().filter((x) => x.movie.id !== id));
+  if ($("#settings-dialog").open) renderSettings();
+  toast(`Restored “${item.movie.title}”`);
+}
+
+function removedSection() {
+  const items = readTrash();
+  return h("section", { class: "panel set-section" },
+    h("span", { class: "micro panel-label", text: "Recently removed" }),
+    items.length
+      ? h("ul", { class: "trash-list" }, items.map((x) => h("li", { class: "trash-row" },
+        h("span", { class: "trash-title" },
+          h("strong", { text: x.movie.title || "Untitled" }),
+          h("span", { class: "hint", text: ` · ${x.movie.mediaType === "tv" ? "TV" : x.movie.mediaType === "custom" ? "Own entry" : "Film"} · ${removedWhen(x.at)}` })),
+        state.movies.has(x.movie.id)
+          ? h("span", { class: "hint", text: "In library" })
+          : h("button", { type: "button", class: "btn btn-sm", onclick: () => restoreRemoved(x.movie.id).catch(() => {}) }, "Restore"))))
+      : h("p", { class: "hint", text: "Nothing removed yet." }),
+    h("p", { class: "hint", text: `The last ${TRASH_MAX} titles you removed, with their watches and lists. Kept on this device only.` }));
+}
+
+function removedWhen(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  return days <= 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
 }
 
 /** A fresh library entry from a TMDB search result. */
@@ -1079,7 +1141,7 @@ async function removeMovie(movie) {
   if (c !== "yes") return;
   await deleteMovie(movie.id);
   if ($("#drawer").open) $("#drawer").close();
-  toast("Removed");
+  toast(`Removed “${movie.title}”`, "info", { label: "Undo", run: () => restoreRemoved(movie.id).catch(() => {}) });
 }
 
 // ---------------------------------------------------------------- TV episodes
@@ -1487,6 +1549,8 @@ function renderSettings() {
         h("button", { type: "button", class: "btn", dataset: { action: "import" } }, icon("tray"), "Import")),
       h("p", { class: "hint", text: days === null ? "Not exported from this device yet — export now and then to keep a backup file." : days === 0 ? "Last exported today." : `Last exported ${days} day${days === 1 ? "" : "s"} ago.` })),
 
+    removedSection(),
+
     h("section", { class: "panel set-section" },
       h("span", { class: "micro panel-label", text: "Account" }),
       h("p", { text: signedIn ? `Signed in as ${state.owner.email} — your library syncs to the cloud.` : "Local mode — your library is saved in this browser only." }),
@@ -1629,7 +1693,10 @@ async function removeFromList(listId, movieId) {
       buttons: [{ label: "Remove it", value: "remove", kind: "danger" }, { label: "Move to watchlist", value: "keep", kind: "hero" }],
     });
     if (c === "keep") await saveMovie({ ...m, inWatchlist: true });
-    else if (c === "remove") await deleteMovie(movieId);
+    else if (c === "remove") {
+      await deleteMovie(movieId);
+      toast(`Removed “${m.title}”`, "info", { label: "Undo", run: () => restoreRemoved(movieId).catch(() => {}) });
+    }
   }
 }
 

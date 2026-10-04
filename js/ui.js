@@ -219,13 +219,19 @@ export function crtTv(stats) {
 
 // ---------- toasts / confirm ----------
 
-export function toast(message, kind = "info") {
+/** action: optional { label, run } — adds a button (e.g. Undo) and keeps the toast up longer. */
+export function toast(message, kind = "info", action = null) {
   const box = document.getElementById("toasts");
   while (box.children.length >= 3) box.firstElementChild.remove();
   const t = h("div", { class: `toast toast-${kind}`, text: message });
+  if (action) {
+    t.classList.add("toast-action");
+    t.append(h("button", { type: "button", class: "toast-btn", text: action.label, onclick: () => { t.remove(); action.run(); } }));
+  }
   box.append(t);
-  setTimeout(() => t.classList.add("out"), 3600);
-  setTimeout(() => t.remove(), 4000);
+  const life = action ? 8000 : 4000;
+  setTimeout(() => t.classList.add("out"), life - 400);
+  setTimeout(() => t.remove(), life);
 }
 
 /**
