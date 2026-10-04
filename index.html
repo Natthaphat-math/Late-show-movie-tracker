@@ -50,6 +50,9 @@
     <symbol id="i-chev-up" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-chev-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M15.5 8.5l-2 5-5 2 2-5z" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7z" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M12 2.5v2.6M12 18.9v2.6M21.5 12h-2.6M5.1 12H2.5M18.7 5.3l-1.8 1.8M7.1 16.9l-1.8 1.8M18.7 18.7l-1.8-1.8M7.1 7.1 5.3 5.3" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V3M7.5 7.5 12 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 11H5.5v10h13V11H16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/></symbol>
+    <symbol id="i-tray" viewBox="0 0 24 24"><path d="M12 3v11M7.5 9.5 12 14l4.5-4.5" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 14v6.5h17V14" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/></symbol>
     <symbol id="i-film" viewBox="0 0 48 48"><rect x="8" y="4" width="32" height="40" rx="4" fill="none" stroke="currentColor" stroke-width="3.5"/><path d="M16 4v40M32 4v40" stroke="currentColor" stroke-width="3.5"/><path d="M8 14h8M8 24h8M8 34h8M32 14h8M32 24h8M32 34h8" stroke="currentColor" stroke-width="3.5"/></symbol>
   </svg>
 
@@ -77,13 +80,7 @@
     </form>
 
     <div class="topbar-right">
-      <div class="themes" role="radiogroup" aria-label="Theme">
-        <span class="micro">Theme</span>
-        <button type="button" class="swatch" role="radio" data-theme-pick="matinee" aria-label="Matinee theme"></button>
-        <button type="button" class="swatch" role="radio" data-theme-pick="arcade" aria-label="Arcade theme"></button>
-        <button type="button" class="swatch" role="radio" data-theme-pick="drivein" aria-label="Drive-in theme"></button>
-        <button type="button" class="swatch" role="radio" data-theme-pick="marquee" aria-label="Marquee dark theme"></button>
-      </div>
+      <button type="button" class="icon-btn settings-btn" id="settings-btn" aria-label="Settings" title="Settings"><svg><use href="#i-gear"/></svg></button>
       <button type="button" class="owner-btn" id="owner-btn" hidden>
         <span class="led" aria-hidden="true"></span>
         <span class="owner-label">Local</span>
@@ -110,8 +107,6 @@
     </button>
     <div class="rail-data">
       <span class="micro rail-label">Data</span>
-      <button type="button" class="btn btn-sm" data-action="export"><svg aria-hidden="true"><use href="#i-down"/></svg>Export</button>
-      <button type="button" class="btn btn-sm" data-action="import"><svg aria-hidden="true"><use href="#i-up"/></svg>Import</button>
       <p class="storage-note micro" id="storage-note">Saved in this browser</p>
     </div>
   </nav>
@@ -202,6 +197,11 @@
   <!-- Small forms: lists, list picker, add-it-yourself (content rendered by js/sheets.js) -->
   <dialog class="modal panel" id="sheet-dialog" aria-label="Form">
     <div class="modal-body" id="sheet-body"></div>
+  </dialog>
+
+  <!-- Settings (content rendered by app.js) -->
+  <dialog class="drawer panel" id="settings-dialog" aria-labelledby="settings-title">
+    <div class="drawer-inner" id="settings-body"></div>
   </dialog>
 
   <!-- Generic confirm / choice -->

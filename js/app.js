@@ -8,7 +8,10 @@ import {
 import { listShelf, listDetail } from "./lists.js";
 import { renderDiscover, refreshSources, cachedSources, cacheIsFresh } from "./discover.js";
 import { listForm, listPicker, customForm } from "./sheets.js";
-import { initSearch, searchMovies, isAbort, fetchMovieMeta, fetchSeason, fetchRelated, fetchProviders, userRegion } from "./search.js";
+import {
+  initSearch, searchMovies, isAbort, fetchMovieMeta, fetchSeason, fetchRelated, fetchProviders,
+  userRegion, autoRegion, setRegionOverride, setThaiOriginals,
+} from "./search.js";
 import {
   seasonsOf, isWatched, isAired, airedIn, watchedIn, episodesWatched, totals, upNext, tvState, epLabel,
   setEpisode, setSeason, setAllAired, startRewatch,
@@ -23,6 +26,7 @@ import { initBatch, openBatch } from "./batch.js";
 
 const $ = (sel) => document.querySelector(sel);
 const THEME_KEY = "movieTracker.theme";
+const LAST_EXPORT_KEY = "movieTracker.lastExport";
 const MERGED_KEY = (uid) => `movieTracker.mergedLocal.${uid}`;
 const THEMES = ["marquee", "matinee", "arcade", "drivein"];
 
@@ -33,6 +37,7 @@ const state = {
   view: "watchlist",
   sort: { watchlist: "added", watched: "recent", discover: "all" },
   prefs: { hidden: [] },  // Discover "Not interested" (synced)
+  settings: { region: null, thaiOriginals: false }, // Settings panel (synced)
   discover: { data: null, loading: false, error: null },
   search: { query: "", results: [], loading: false, error: null },
   drawer: null, // { id } or { pending: movie }
@@ -98,6 +103,9 @@ function withSyncTracking(adapter) {
     removeMovie: (id) => track(adapter.removeMovie(id)),
     getLists: () => adapter.getLists(),
     getPrefs: () => adapter.getPrefs(),
+    getSettings: () => adapter.getSettings(),
+    saveSettings: (x) => track(adapter.saveSettings(x)),
+    get settingsBlocked() { return adapter.settingsBlocked; },
     savePrefs: (p) => track(adapter.savePrefs(p)),
     get prefsBlocked() { return adapter.prefsBlocked; },
     saveList: (l) => track(adapter.saveList(l)),
@@ -122,6 +130,9 @@ async function useAdapter(adapter) {
   state.movies = new Map(list.map((m) => [m.id, m]));
   state.lists = await adapter.getLists().catch((err) => { console.warn("Couldn't load lists", err); return []; });
   state.prefs = await adapter.getPrefs().catch(() => ({ hidden: [] }));
+  // Cloud settings when available; this device's copy otherwise (e.g. rules not yet published).
+  const cloud = adapter.name === "firestore" ? await adapter.getSettings().catch(() => null) : null;
+  applySettings(cloud || await localStorageAdapter.getSettings());
   if (state.listId && !state.lists.some((l) => l.id === state.listId)) state.listId = null;
   $("#storage-note").textContent = adapter.name === "firestore" ? "Synced to owner cloud" : "Saved in this browser";
   metaTried.clear();
@@ -131,6 +142,7 @@ async function useAdapter(adapter) {
 
 // ---- genres / year / runtime for the stats page, fetched quietly in the background.
 const metaTried = new Set();
+const forceMeta = new Set(); // ids to re-fetch now (region or language changed)
 let backfilling = false;
 let tmdbReady = false;
 
@@ -140,7 +152,9 @@ let tmdbReady = false;
  */
 function needsMeta(m) {
   if (m.mediaType === "custom") return false;
+  if (forceMeta.has(m.id)) return true;
   if (!hasMeta(m)) return true;
+  if (m.origLang === null) return true; // fetched before original language was stored (one-time)
   const today = todayISO();
   if (m.metaDate === today) return false;
   if (!m.metaDate) return true; // fetched before release dates were stored
@@ -168,6 +182,7 @@ async function backfillMeta() {
       await Promise.all(todo.map(async (m) => {
         metaTried.add(m.id);
         try {
+          forceMeta.delete(m.id);
           const meta = await fetchMovieMeta(m);
           const cur = state.movies.get(m.id);
           if (!cur) return;
@@ -257,6 +272,10 @@ async function offerLocalMerge(uid) {
   if (choice !== "merge") return;
   const local = await localStorageAdapter.getMovies();
   await runImport(local, "merge", await localStorageAdapter.getLists());
+  const localSettings = await localStorageAdapter.getSettings();
+  if ((localSettings.region || localSettings.thaiOriginals) && !state.settings.region && !state.settings.thaiOriginals) {
+    await saveSettings(localSettings).catch(() => {});
+  }
   const localPrefs = await localStorageAdapter.getPrefs();
   if (localPrefs.hidden.length) {
     state.prefs = { hidden: [...new Set([...state.prefs.hidden, ...localPrefs.hidden])] };
@@ -663,9 +682,7 @@ function renderStats() {
     h("span", { class: "micro panel-label", text: "Library data" }),
     h("p", { class: "muted", text: state.adapter.name === "firestore" ? "Owner mode: synced to Firestore." : "Local mode: saved only in this browser. Export regularly to keep a backup." }),
     h("p", { class: "muted", text: `Release dates for region: ${userRegion() || "worldwide (couldn't detect)"}` }),
-    h("div", { class: "row" },
-      h("button", { type: "button", class: "btn", dataset: { action: "export" } }, icon("down"), "Export JSON"),
-      h("button", { type: "button", class: "btn", dataset: { action: "import" } }, icon("up"), "Import JSON")));
+    h("button", { type: "button", class: "btn btn-sm", onclick: openSettings }, icon("gear"), "Backup & settings"));
 
   const taste = tasteProfile(all, {
     pending: tmdbReady ? metaPending() : 0,
@@ -1279,6 +1296,124 @@ function relatedTile(r, current, section) {
       : null);
 }
 
+// ---------------------------------------------------------------- settings
+
+// Countries offered in Settings → Region (TMDB's watch-provider regions); names come from the phone.
+const REGIONS = ("AE AR AT AU BE BG BR CA CH CL CO CZ DE DK EC EE EG ES FI FR GB GR HK HR HU ID IE IL IN IS IT JP KR LT LV " +
+  "MA MX MY NL NO NZ PE PH PK PL PT RO RS RU SA SE SG SI SK TH TR TW UA US UY VE VN ZA").split(" ");
+
+function regionName(code) {
+  try { return new Intl.DisplayNames(undefined, { type: "region" }).of(code) || code; } catch { return code; }
+}
+
+function applySettings(next) {
+  state.settings = { region: next?.region || null, thaiOriginals: next?.thaiOriginals === true };
+  setRegionOverride(state.settings.region);
+  setThaiOriginals(state.settings.thaiOriginals);
+}
+
+/** Saves settings (cloud when signed in, plus this device), then refreshes what depends on them. */
+async function saveSettings(patch) {
+  const prev = state.settings;
+  const next = { ...prev, ...patch };
+  applySettings(next);
+  await localStorageAdapter.saveSettings(next);
+  if (state.adapter.name === "firestore") {
+    try {
+      await state.adapter.saveSettings(next);
+    } catch (err) {
+      console.error(err);
+      toast(err?.code === "permission-denied" ? "Saved on this device. Publish the updated Firestore rules to sync settings." : "Saved on this device only.", "error");
+    }
+  }
+  const today = todayISO();
+  if (prev.region !== next.region) {
+    // Release dates and streaming options are per country.
+    providerCache.clear();
+    for (const m of state.movies.values()) {
+      if (m.mediaType === "custom") continue;
+      if (m.inWatchlist || m.mediaType === "tv" || (m.releaseDate && m.releaseDate >= addDays(today, -30))) { forceMeta.add(m.id); metaTried.delete(m.id); }
+    }
+  }
+  if (prev.thaiOriginals !== next.thaiOriginals) {
+    for (const m of state.movies.values()) if (m.origLang === "th") { forceMeta.add(m.id); metaTried.delete(m.id); }
+    relatedCache.clear();
+  }
+  render({ drawer: false });
+  backfillMeta();
+}
+
+function openSettings() {
+  renderSettings();
+  const dlg = $("#settings-dialog");
+  if (!dlg.open) dlg.showModal();
+}
+
+function renderSettings() {
+  const auto = autoRegion();
+  const select = h("select", { id: "set-region", "aria-describedby": "set-region-hint" },
+    h("option", { value: "", text: `Automatic${auto ? ` — ${regionName(auto)}` : ""}` }),
+    REGIONS.map((c) => ({ c, n: regionName(c) })).sort((a, b) => a.n.localeCompare(b.n))
+      .map(({ c, n }) => h("option", { value: c, text: n })));
+  select.value = state.settings.region || "";
+  select.addEventListener("change", () => saveSettings({ region: select.value || null }).catch(() => {}));
+
+  const thai = h("input", { type: "checkbox", id: "set-thai", checked: state.settings.thaiOriginals });
+  thai.addEventListener("change", () => saveSettings({ thaiOriginals: thai.checked }).catch(() => {}));
+
+  const theme = document.documentElement.dataset.theme;
+  const swatches = h("div", { class: "themes", role: "radiogroup", "aria-label": "Theme" },
+    [["marquee", "Marquee (dark)"], ["matinee", "Matinee"], ["arcade", "Arcade"], ["drivein", "Drive-in"]].map(([key, label]) =>
+      h("label", { class: "theme-pick" },
+        h("button", { type: "button", class: "swatch", role: "radio", "aria-checked": String(theme === key), "aria-label": `${label} theme`, dataset: { themePick: key } }),
+        h("span", { text: label }))));
+
+  const last = readPref(LAST_EXPORT_KEY);
+  const days = last ? Math.round((new Date(`${todayISO()}T12:00:00`) - new Date(`${last}T12:00:00`)) / 86400000) : null;
+  const signedIn = Boolean(state.owner);
+  const synced = state.adapter.name === "firestore";
+
+  $("#settings-body").replaceChildren(
+    h("div", { class: "drawer-head" },
+      h("span", { class: "micro", text: "Late Show" }),
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Close settings", onclick: () => $("#settings-dialog").close() }, icon("x"))),
+    h("h2", { id: "settings-title", class: "settings-title", text: "Settings" }),
+
+    h("section", { class: "panel set-section" },
+      h("span", { class: "micro panel-label", text: "Region" }),
+      h("label", { class: "field-label", for: "set-region", text: "Country" }), select,
+      h("p", { class: "hint", id: "set-region-hint", text: "Used for release dates, Coming soon, Where to watch and Discover." + (synced ? " Synced to your account." : "") })),
+
+    h("section", { class: "panel set-section" },
+      h("span", { class: "micro panel-label", text: "Language" }),
+      h("label", { class: "check-row", for: "set-thai" }, thai,
+        h("span", {}, h("strong", { text: "Thai films & shows in Thai" }),
+          h("span", { class: "hint", text: " — original Thai titles and Thai posters (when TMDB has one). Everything else stays in English." })))),
+
+    h("section", { class: "panel set-section" },
+      h("span", { class: "micro panel-label", text: "Appearance" }),
+      swatches),
+
+    h("section", { class: "panel set-section" },
+      h("span", { class: "micro panel-label", text: "Data" }),
+      h("div", { class: "row" },
+        h("button", { type: "button", class: "btn", dataset: { action: "export" } }, icon("share"), "Export"),
+        h("button", { type: "button", class: "btn", dataset: { action: "import" } }, icon("tray"), "Import")),
+      h("p", { class: "hint", text: days === null ? "Not exported from this device yet — export now and then to keep a backup file." : days === 0 ? "Last exported today." : `Last exported ${days} day${days === 1 ? "" : "s"} ago.` })),
+
+    h("section", { class: "panel set-section" },
+      h("span", { class: "micro panel-label", text: "Account" }),
+      h("p", { text: signedIn ? `Signed in as ${state.owner.email} — your library syncs to the cloud.` : "Local mode — your library is saved in this browser only." }),
+      ownerModeAvailable()
+        ? h("button", { type: "button", class: `btn ${signedIn ? "btn-ghost" : "btn-hero"}`, onclick: () => { $("#settings-dialog").close(); onOwnerButton(); } }, signedIn ? "Sign out" : "Owner sign-in")
+        : null),
+
+    h("section", { class: "set-about" },
+      h("p", { class: "hint" }, "Movie and TV data from ", h("a", { href: "https://www.themoviedb.org/", target: "_blank", rel: "noopener noreferrer", text: "TMDB" }),
+        ". This product uses the TMDB API but is not endorsed or certified by TMDB. Streaming availability by ",
+        h("a", { href: "https://www.justwatch.com/", target: "_blank", rel: "noopener noreferrer", text: "JustWatch" }), ".")));
+}
+
 // ---------------------------------------------------------------- discover
 
 function discoverView() {
@@ -1572,6 +1707,8 @@ function exportLibrary() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  writePref(LAST_EXPORT_KEY, todayISO());
+  if ($("#settings-dialog").open) renderSettings();
   toast(`Exported ${data.movies.length} titles${data.lists.length ? ` and ${data.lists.length} lists` : ""}`);
 }
 
@@ -1695,7 +1832,11 @@ function wireEvents() {
     render();
   });
 
-  document.querySelectorAll("[data-theme-pick]").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.themePick)));
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-theme-pick]");
+    if (b) applyTheme(b.dataset.themePick);
+  });
+  $("#settings-btn").addEventListener("click", openSettings);
   $("#owner-btn").addEventListener("click", onOwnerButton);
   $("#signin-form").addEventListener("submit", onSignInSubmit);
   $("#paste-form").addEventListener("submit", onPasteSubmit);

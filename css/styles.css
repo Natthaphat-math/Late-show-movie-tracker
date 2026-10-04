@@ -867,6 +867,20 @@ a.provider:hover { box-shadow: 2px 2px 0 var(--shadow); }
 }
 .rel-add { position: absolute; z-index: 3; top: 6px; right: 6px; width: 30px; height: 30px; border-radius: 50%; }
 
+/* ---------------------------------------------------------------- settings */
+
+.settings-btn { width: 40px; height: 40px; border-radius: 12px; }
+.settings-btn svg { width: 20px; height: 20px; }
+.settings-title { font-size: 30px; font-weight: 900; font-stretch: 115%; text-transform: uppercase; }
+.set-section { display: flex; flex-direction: column; gap: 10px; padding: 24px 16px 16px; box-shadow: 4px 4px 0 var(--shadow); }
+.set-section select { width: 100%; font-size: 16px; padding: 10px 12px; border-width: 3px; border-radius: var(--r); }
+.set-section .check-row { align-items: flex-start; }
+.set-section .check-row input { margin-top: 2px; }
+.set-section .themes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.theme-pick { display: flex; align-items: center; gap: 10px; font-weight: 700; cursor: pointer; }
+.set-about { padding: 0 4px; }
+.set-about a { color: inherit; }
+
 /* ---------------------------------------------------------------- discover */
 
 .discover { display: flex; flex-direction: column; gap: 30px; }

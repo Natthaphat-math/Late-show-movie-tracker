@@ -20,6 +20,7 @@
 export const LOCAL_KEY = "movieTracker.library.v1";
 export const LOCAL_LISTS_KEY = "movieTracker.lists.v1";
 export const LOCAL_PREFS_KEY = "movieTracker.prefs.v1";
+export const LOCAL_SETTINGS_KEY = "movieTracker.settings.v1";
 
 const LIMITS = { title: 300, notes: 2000, url: 2048, watchLog: 1000, emoji: 16, listName: 80, listDesc: 300, listItems: 500 };
 const POSTER_PATH_RE = /^\/[A-Za-z0-9_.-]{1,200}$/;
@@ -191,10 +192,11 @@ export function normalizeMeta(raw) {
           .slice(0, 100)
       : null,
     metaDate: date(raw.metaDate),                 // when the facts above were last fetched
+    origLang: typeof raw.origLang === "string" && /^[a-z]{2}$/.test(raw.origLang) ? raw.origLang : null, // "xx" = none
   };
 }
 
-export const META_KEYS = ["genres", "releaseYear", "runtime", "releaseDate", "tvStatus", "nextAirDate", "nextAirSeason", "nextAirEpisode", "seasons", "metaDate"];
+export const META_KEYS = ["genres", "releaseYear", "runtime", "releaseDate", "tvStatus", "nextAirDate", "nextAirSeason", "nextAirEpisode", "seasons", "metaDate", "origLang"];
 
 export const hasMeta = (m) => Array.isArray(m.genres) && (m.mediaType !== "tv" || Array.isArray(m.seasons));
 
@@ -227,6 +229,17 @@ export function normalizeList(raw) {
 export function normalizePrefs(raw) {
   const hidden = Array.isArray(raw?.hidden) ? raw.hidden.filter((x) => typeof x === "string" && MOVIE_ID_RE.test(x)) : [];
   return { hidden: [...new Set(hidden)].slice(-1000) };
+}
+
+/**
+ * Synced settings. region: ISO country code, or null = automatic from the phone.
+ * thaiOriginals: show Thai-language films/shows with their Thai title and poster.
+ */
+export function normalizeSettings(raw) {
+  return {
+    region: typeof raw?.region === "string" && /^[A-Z]{2}$/.test(raw.region) ? raw.region : null,
+    thaiOriginals: raw?.thaiOriginals === true,
+  };
 }
 
 // ---------- import / export / merge ----------
@@ -396,6 +409,12 @@ export const localStorageAdapter = {
   async savePrefs(prefs) {
     localStorage.setItem(LOCAL_PREFS_KEY, JSON.stringify(normalizePrefs(prefs)));
   },
+  async getSettings() {
+    return normalizeSettings(readJSON(LOCAL_SETTINGS_KEY));
+  },
+  async saveSettings(settings) {
+    localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify(normalizeSettings(settings)));
+  },
 };
 
 export function localLibraryCount() {
@@ -486,6 +505,19 @@ export function createFirestoreAdapter(fb, uid) {
     },
     async savePrefs(prefs) {
       await fb.setDoc(ref("prefs", "discover"), normalizePrefs(prefs));
+    },
+    // users/{uid}/prefs/settings
+    async getSettings() {
+      try {
+        const snap = await fb.getDoc(ref("prefs", "settings"));
+        return normalizeSettings(snap.exists() ? snap.data() : null);
+      } catch (err) {
+        if (err?.code === "permission-denied") { this.settingsBlocked = true; return null; }
+        throw err;
+      }
+    },
+    async saveSettings(settings) {
+      await fb.setDoc(ref("prefs", "settings"), normalizeSettings(settings));
     },
   };
 }

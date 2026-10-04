@@ -50,7 +50,18 @@ export async function searchMoviesOnce(query, year = null) {
  * The phone's region (e.g. "TH") for release dates: the first preferred language that names a
  * region, else the likely region for the language. null if the browser can't tell.
  */
+let regionOverride = null;   // from Settings; null = automatic
+let thaiOriginals = false;   // Settings → Language: show Thai-language titles in Thai
+
+export function setRegionOverride(code) { regionOverride = code || null; }
+export function setThaiOriginals(on) { thaiOriginals = Boolean(on); }
+
+/** Region used for release dates and where to watch: Settings choice, else the phone's guess. */
 export function userRegion() {
+  return regionOverride || autoRegion();
+}
+
+export function autoRegion() {
   try {
     for (const tag of navigator.languages || [navigator.language]) {
       const r = new Intl.Locale(tag).region;
@@ -88,6 +99,9 @@ export async function fetchMovieMeta(movie) {
   if (!res.ok) throw new Error(`TMDB details failed (${res.status}).`);
   const d = await res.json();
   const genres = (Array.isArray(d.genres) ? d.genres : []).map((g) => g && g.id).filter((id) => Number.isInteger(id) && id > 0);
+  const origLang = typeof d.original_language === "string" && /^[a-z]{2}$/.test(d.original_language) ? d.original_language : "xx";
+  // Thai-language originals: title + poster follow Settings → Language.
+  const naming = origLang === "th" ? await thaiNaming(movie, d, tv) : {};
 
   if (!tv) {
     const releaseDate = regionalRelease(d.release_dates, userRegion()) || dateOnly(d.release_date);
@@ -97,6 +111,8 @@ export async function fetchMovieMeta(movie) {
       runtime: Number.isInteger(d.runtime) && d.runtime > 0 ? d.runtime : null,
       releaseDate,
       metaDate: today,
+      origLang,
+      ...naming,
     };
   }
 
@@ -121,7 +137,37 @@ export async function fetchMovieMeta(movie) {
       .filter((x) => Number.isInteger(x.season_number) && x.season_number > 0 && Number.isInteger(x.episode_count))
       .map((x) => ({ n: x.season_number, c: x.episode_count, d: dateOnly(x.air_date) })),
     metaDate: today,
+    origLang,
+    ...naming,
   };
+}
+
+/**
+ * Title and poster for a Thai-language original. With the Thai option on: the original Thai
+ * title and a Thai-language poster when TMDB has one. Off: the English title and default poster.
+ */
+async function thaiNaming(movie, d, tv) {
+  const english = tv ? d.name : d.title;
+  const thai = tv ? d.original_name : d.original_title;
+  const out = {};
+  const pick = thaiOriginals ? thai || english : english || thai;
+  if (typeof pick === "string" && pick.trim()) out.title = pick.trim().slice(0, 300);
+  let poster = typeof d.poster_path === "string" && POSTER_PATH_RE.test(d.poster_path) ? d.poster_path : null;
+  if (thaiOriginals) {
+    try {
+      const res = await fetch(`${API}/${tv ? "tv" : "movie"}/${encodeURIComponent(movie.tmdbId)}/images?include_image_language=th`, { headers: headers() });
+      if (res.ok) {
+        const imgs = await res.json();
+        const th = (imgs.posters || []).filter((p) => p.iso_639_1 === "th" && POSTER_PATH_RE.test(p.file_path || ""))
+          .sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0))[0];
+        if (th) poster = th.file_path;
+      }
+    } catch {
+      // keep the default poster
+    }
+  }
+  if (poster) out.posterPath = poster;
+  return out;
 }
 
 /** Episode list for one season (names, air dates) — fetched on demand, not stored. */
@@ -178,7 +224,8 @@ function cleanResults(data) {
     .filter((r) => (r.media_type === "movie" || r.media_type === "tv") && Number.isSafeInteger(r.id) && r.id > 0)
     .map((r) => {
       const tv = r.media_type === "tv";
-      const title = tv ? r.name : r.title;
+      const original = tv ? r.original_name : r.original_title;
+      const title = thaiOriginals && r.original_language === "th" && typeof original === "string" && original.trim() ? original : tv ? r.name : r.title;
       const date = tv ? r.first_air_date : r.release_date;
       return {
         id: tv ? `tv-${r.id}` : String(r.id),
