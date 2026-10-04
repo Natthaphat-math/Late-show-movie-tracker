@@ -197,6 +197,40 @@ function cleanResults(data) {
     .filter((r) => r.title);
 }
 
+// ---------------------------------------------------------------- where to watch
+
+/**
+ * Streaming / rent / buy availability in one region (TMDB's watch providers, data by JustWatch).
+ * Returns { link, stream: [...], rent: [...], buy: [...] } — each { id, name, logo } — or null
+ * when TMDB has nothing for that region.
+ */
+export async function fetchProviders(movie, region) {
+  if (!token) throw new Error("TMDB token missing.");
+  const kind = movie.mediaType === "tv" ? "tv" : "movie";
+  const res = await fetch(`${API}/${kind}/${encodeURIComponent(movie.tmdbId)}/watch/providers`, { headers: headers() });
+  if (!res.ok) throw new Error(`TMDB providers failed (${res.status}).`);
+  const d = await res.json();
+  const r = d.results?.[region];
+  if (!r) return null;
+  const clean = (list) => (Array.isArray(list) ? list : [])
+    .filter((p) => Number.isInteger(p.provider_id) && typeof p.provider_name === "string")
+    .sort((a, b) => (a.display_priority ?? 99) - (b.display_priority ?? 99))
+    .map((p) => ({
+      id: p.provider_id,
+      name: p.provider_name.slice(0, 80),
+      logo: typeof p.logo_path === "string" && POSTER_PATH_RE.test(p.logo_path) ? p.logo_path : null,
+    }));
+  const dedupe = (list) => list.filter((p, i) => list.findIndex((q) => q.id === p.id) === i);
+  let link = null;
+  try { const u = new URL(r.link); if (u.protocol === "https:" && u.hostname.endsWith("themoviedb.org")) link = u.href; } catch {}
+  return {
+    link,
+    stream: dedupe([...clean(r.flatrate), ...clean(r.free), ...clean(r.ads)]),
+    rent: clean(r.rent),
+    buy: clean(r.buy),
+  };
+}
+
 // ---------------------------------------------------------------- Discover sources
 
 async function getList(path, kind = null) {

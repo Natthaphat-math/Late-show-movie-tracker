@@ -8,7 +8,7 @@ import {
 import { listShelf, listDetail } from "./lists.js";
 import { renderDiscover, refreshSources, cachedSources, cacheIsFresh } from "./discover.js";
 import { listForm, listPicker, customForm } from "./sheets.js";
-import { initSearch, searchMovies, isAbort, fetchMovieMeta, fetchSeason, fetchRelated, userRegion } from "./search.js";
+import { initSearch, searchMovies, isAbort, fetchMovieMeta, fetchSeason, fetchRelated, fetchProviders, userRegion } from "./search.js";
 import {
   seasonsOf, isWatched, isAired, airedIn, watchedIn, episodesWatched, totals, upNext, tvState, epLabel,
   setEpisode, setSeason, setAllAired, startRewatch,
@@ -910,6 +910,7 @@ function renderDrawer() {
     movie.mediaType === "tv" && !ed ? tvPanel(movie) : logForm,
     inLib ? history : null,
     listsSection(movie),
+    providersSection(movie),
     relatedSection(movie),
     actions].filter(Boolean));
 }
@@ -1117,6 +1118,76 @@ function seasonBody(movie, s, aired, watched) {
         ? h("button", { type: "button", class: "btn btn-xs btn-ghost", onclick: () => tvChange(movie, (c) => setSeason(c, s.n, false)).catch(() => {}) }, "Clear season")
         : null),
     h("ol", { class: "ep-list" }, rows));
+}
+
+// ---------------------------------------------------------------- where to watch (drawer)
+
+const providerCache = new Map(); // movie id → result | null | Promise
+
+/** Calls `load` once the element scrolls near view inside the drawer (or right away). */
+function whenVisible(el, load) {
+  if (!("IntersectionObserver" in window)) { load(); return; }
+  const io = new IntersectionObserver((entries) => {
+    if (entries.some((e) => e.isIntersecting)) { io.disconnect(); load(); }
+  }, { root: $("#drawer"), rootMargin: "200px" });
+  io.observe(el);
+}
+
+/**
+ * Where to watch in your region: Stream / Rent / Buy logos from TMDB (JustWatch data).
+ * Loaded on scroll, cached for the session, never saved to Firestore.
+ */
+function providersSection(movie) {
+  if (movie.mediaType === "custom" || !movie.tmdbId || !tmdbReady) return null;
+  const region = userRegion();
+  if (!region) return null;
+  const section = h("section", { class: "providers", "aria-label": "Where to watch" });
+  const cached = providerCache.get(movie.id);
+  if (cached !== undefined && !(cached instanceof Promise)) {
+    fillProviders(section, cached, region);
+    return section;
+  }
+  section.append(h("span", { class: "micro", text: "Where to watch…" }));
+  whenVisible(section, () => {
+    let p = providerCache.get(movie.id);
+    if (!(p instanceof Promise)) {
+      p = fetchProviders(movie, region)
+        .then((data) => { providerCache.set(movie.id, data); return data; })
+        .catch((err) => { providerCache.delete(movie.id); throw err; });
+      providerCache.set(movie.id, p);
+    }
+    p.then((data) => { if (section.isConnected) fillProviders(section, data, region); })
+      .catch(() => { if (section.isConnected) section.replaceChildren(h("p", { class: "muted", text: "Couldn't load where to watch." })); });
+  });
+  return section;
+}
+
+function regionLabel(code) {
+  try { return new Intl.DisplayNames(undefined, { type: "region" }).of(code) || code; } catch { return code; }
+}
+
+function fillProviders(section, data, region) {
+  const head = h("div", { class: "rel-head" },
+    h("span", { class: "micro", text: `Where to watch in ${regionLabel(region)}` }),
+    data?.link ? h("a", { class: "micro link", href: data.link, target: "_blank", rel: "noopener noreferrer", text: "All options ↗" }) : null);
+  const groups = data ? [["Stream", data.stream], ["Rent", data.rent], ["Buy", data.buy]].filter(([, list]) => list.length) : [];
+  const credit = h("p", { class: "provider-credit" }, "Availability by ",
+    h("a", { href: "https://www.justwatch.com/", target: "_blank", rel: "noopener noreferrer", text: "JustWatch" }), " via TMDB.");
+  if (!groups.length) {
+    section.replaceChildren(head, h("p", { class: "muted", text: "Not available to stream, rent or buy here right now." }), credit);
+    return;
+  }
+  section.replaceChildren(head,
+    ...groups.map(([label, list]) => h("div", { class: "provider-group" },
+      h("span", { class: "provider-label mono", text: label }),
+      h("ul", { class: "provider-list" }, list.slice(0, 10).map((p) => h("li", {},
+        h(data.link ? "a" : "span", {
+          class: "provider", title: p.name,
+          ...(data.link ? { href: data.link, target: "_blank", rel: "noopener noreferrer" } : {}),
+        },
+          p.logo ? h("img", { src: `https://image.tmdb.org/t/p/w92${p.logo}`, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("span", { class: "provider-initial", text: p.name.slice(0, 1) }),
+          h("span", { class: "provider-name", text: p.name }))))))),
+    credit);
 }
 
 // ---------------------------------------------------------------- related titles (drawer)

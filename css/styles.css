@@ -813,6 +813,26 @@ dialog::backdrop { background: var(--backdrop); }
 .ep-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ep-date { font-size: 11px; color: var(--text-soft); }
 
+/* ---------------------------------------------------------------- where to watch (drawer) */
+
+.providers { display: flex; flex-direction: column; gap: 12px; }
+.provider-group { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; align-items: start; }
+.provider-label { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--text-soft); padding-top: 12px; }
+.provider-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.provider {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 4px 10px 4px 4px;
+  background: var(--field); color: var(--text);
+  border: 2px solid var(--line); border-radius: 12px;
+  text-decoration: none; font-size: 13px; font-weight: 700;
+}
+a.provider:hover { box-shadow: 2px 2px 0 var(--shadow); }
+.provider img, .provider-initial { width: 30px; height: 30px; border-radius: 7px; flex: none; }
+.provider-initial { display: grid; place-items: center; background: var(--surface-2); font-weight: 900; }
+.provider-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-credit { font-size: 11.5px; color: var(--text-soft); }
+.provider-credit a { color: inherit; }
+
 /* ---------------------------------------------------------------- related titles (drawer) */
 
 .related { display: flex; flex-direction: column; gap: 22px; min-height: 20px; }
