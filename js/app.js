@@ -23,6 +23,7 @@ import {
 } from "./ui.js";
 import * as fire from "./firebase-init.js";
 import { initBatch, openBatch } from "./batch.js";
+import { openYearReview, reviewYears, defaultReviewYear, yearInReview } from "./wrapped.js";
 import { catalogFor, loadCatalog, recordAvailability, onMyServices, refreshAvailability } from "./services.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -768,7 +769,7 @@ function renderWatchlist() {
       });
     })) : null,
     u.length ? section("Up next", `${u.length} show${u.length === 1 ? "" : "s"} in progress`, u.map(upNextCard)) : null,
-    out.length ? section(soon.length || u.length ? "Out now" : "Watchlist", null,
+    out.length ? (soon.length || u.length ? (cards) => section("Out now", null, cards) : (cards) => h("div", { class: "grid" }, cards))(
       out.map((m) => libraryCard(m, { badge: m.mediaType !== "tv" && isNew(m.releaseDate) ? "NEW" : null, extra: serviceStrip(m) }))) : null);
 }
 
@@ -829,7 +830,33 @@ function renderGrid(view) {
   }
   if (view === "watchlist") return renderWatchlist();
   if (!list.length) return emptyState("No watches logged", "Mark a watchlist title as watched, or log one straight from search.", focusSearchButton());
+  if (view === "watched" && state.sort.watched === "recent") return diary(list);
   return h("div", { class: "grid" }, list.map((m) => libraryCard(m)));
+}
+
+/** Watched, newest first, grouped by the month of the last watch — like a diary. */
+function diary(list) {
+  const groups = [];
+  for (const m of list) {
+    const iso = lastActivity(m);
+    const key = iso ? iso.slice(0, 7) : "";
+    let g = groups[groups.length - 1];
+    if (!g || g.key !== key) groups.push(g = { key, items: [] });
+    g.items.push(m);
+  }
+  // Mostly one title per month would leave half-empty rows; a plain grid reads better then.
+  if (list.length < groups.length * 2) return h("div", { class: "grid" }, list.map((m) => libraryCard(m)));
+  const thisYear = todayISO().slice(0, 4);
+  const label = (key) => {
+    if (!key) return "No date";
+    const d = new Date(`${key}-15T12:00:00`);
+    return d.toLocaleDateString(undefined, key.startsWith(thisYear) ? { month: "long" } : { month: "long", year: "numeric" });
+  };
+  return h("div", {}, groups.map((g) => h("section", { class: "wl-section" },
+    h("div", { class: "wl-head" },
+      h("h2", { class: "wl-title", text: label(g.key) }),
+      h("span", { class: "micro", text: `${g.items.length} title${g.items.length === 1 ? "" : "s"}` })),
+    h("div", { class: "grid" }, g.items.map((m) => libraryCard(m))))));
 }
 
 function focusSearchButton() {
@@ -886,11 +913,7 @@ function renderStats() {
               miniMeter(e.rating)))))
       : h("p", { class: "muted", text: "Nothing logged yet." }));
 
-  const dataPanel = h("section", { class: "panel data-panel" },
-    h("span", { class: "micro panel-label", text: "Library data" }),
-    h("p", { class: "muted", text: state.adapter.name === "firestore" ? "Owner mode: synced to Firestore." : "Local mode: saved only in this browser. Export regularly to keep a backup." }),
-    h("p", { class: "muted", text: `Release dates for region: ${userRegion() || "worldwide (couldn't detect)"}` }),
-    h("button", { type: "button", class: "btn btn-sm", onclick: openSettings }, icon("gear"), "Backup & settings"));
+  const dataPanel = reviewCard();
 
   const taste = tasteProfile(all, {
     pending: tmdbReady ? metaPending() : 0,
@@ -906,6 +929,25 @@ function renderStats() {
   return h("div", {},
     h("div", { class: "stats" }, h("div", { class: "stats-hero" }, tv), h("div", { class: "stats-side" }, recentPanel, dataPanel)),
     taste);
+}
+
+/** Stats card that opens Year in review. */
+function reviewCard() {
+  const years = reviewYears(state.movies);
+  const year = defaultReviewYear(state.movies);
+  const d = yearInReview(state.movies, year);
+  const open = (y) => openYearReview(state.movies, y, {
+    years,
+    onOpenTitle: (id) => { $("#wrapped-dialog").close(); openDrawer({ id }); },
+  });
+  return h("section", { class: "panel review-card" },
+    h("span", { class: "micro panel-label", text: "Year in review" }),
+    h("div", { class: "review-card-body" },
+      h("span", { class: "review-card-year", text: String(year) }),
+      h("p", { class: "muted", text: d.count
+        ? `${d.count} dated watch${d.count === 1 ? "" : "es"} so far${d.top[0] ? ` · top rated: ${d.top[0].movie.title}` : ""}.`
+        : "Log watches with a date and your year comes together here." })),
+    h("button", { type: "button", class: "btn btn-hero", disabled: !years.length, onclick: () => open(year) }, icon("tv"), `Play ${year}`));
 }
 
 /**
@@ -1073,7 +1115,10 @@ function renderDrawer() {
   const formLabel = ed ? "Edit watch" : rv ? `Add details · ${state.review.i + 1} of ${state.review.queue.length}` : n ? "Log a rewatch" : "Log a watch";
   const logForm = h("form", { class: `panel log-form${ed ? " is-editing" : ""}`, onsubmit: submit },
     h("span", { class: "micro panel-label", text: formLabel }),
-    h("label", { class: "field-label", for: dateInput.id, text: "Date" }), dateInput,
+    h("div", { class: "field-row" },
+      h("label", { class: "field-label", for: dateInput.id, text: "Date" }),
+      h("button", { type: "button", class: "btn btn-xs btn-ghost", text: "Today", onclick: () => { dateInput.value = todayISO(); } })),
+    dateInput,
     h("span", { class: "field-label", text: "Rating" }), rating.el,
     h("label", { class: "field-label", for: notes.id, text: "Notes" }), notes,
     ed

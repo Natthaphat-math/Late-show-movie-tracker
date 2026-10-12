@@ -88,14 +88,25 @@ export function statusLeds(movie) {
   if (n === 0 && !movie.inWatchlist) {
     wrap.append(h("span", { class: "micro status-text", text: "Saved" }));
   } else if (n === 0) {
+    // On the watchlist already says "watchlist"; the year and length help pick tonight's film.
+    const facts = [movie.releaseYear, movie.mediaType !== "tv" && movie.runtime ? runtimeLabel(movie.runtime) : null,
+      movie.mediaType === "tv" && Array.isArray(movie.seasons) ? `${movie.seasons.filter((x) => x.n > 0).length} seasons` : null].filter(Boolean);
     leds.append(h("span", { class: "led led-hollow" }));
-    wrap.append(leds, h("span", { class: "micro status-text", text: "On watchlist" }));
+    wrap.append(leds, h("span", { class: "micro status-text", text: facts.length ? facts.join(" · ") : "On watchlist" }));
   } else {
     for (let i = 0; i < Math.min(n, 5); i++) leds.append(h("span", { class: "led led-on" }));
-    wrap.append(leds, h("span", { class: "micro status-text", text: `Watched ${n}×` }));
+    let rating = null;
+    for (let i = n - 1; i >= 0 && !rating; i--) rating = movie.watchLog[i].rating;
+    const text = rating ? `${rating}/10${n > 1 ? ` · ${n}×` : ""}` : `Watched ${n}×`;
+    wrap.append(leds, h("span", { class: "micro status-text", text, "aria-label": rating ? `Rated ${rating} of 10, watched ${n} time${n === 1 ? "" : "s"}` : null }));
     if (movie.inWatchlist) wrap.append(h("span", { class: "led led-hollow", title: "Also on watchlist", "aria-label": "Also on watchlist", role: "img" }));
   }
   return wrap;
+}
+
+function runtimeLabel(min) {
+  const hh = Math.floor(min / 60), mm = min % 60;
+  return hh ? `${hh}h${mm ? ` ${String(mm).padStart(2, "0")}m` : ""}` : `${mm}m`;
 }
 
 // ---------- segmented rating meter ----------

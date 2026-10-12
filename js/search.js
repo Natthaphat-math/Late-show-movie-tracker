@@ -95,7 +95,14 @@ export async function fetchMovieMeta(movie) {
   const res = await fetch(url, { headers: headers() });
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  if (res.status === 404) return { genres: [], releaseYear: null, runtime: null, seasons: tv ? [] : null, metaDate: today };
+  // Gone from TMDB: mark it checked, but keep any details we already have.
+  if (res.status === 404) {
+    return {
+      metaDate: today,
+      ...(Array.isArray(movie.genres) ? {} : { genres: [] }),
+      ...(tv && !Array.isArray(movie.seasons) ? { seasons: [] } : {}),
+    };
+  }
   if (!res.ok) throw new Error(`TMDB details failed (${res.status}).`);
   const d = await res.json();
   const genres = (Array.isArray(d.genres) ? d.genres : []).map((g) => g && g.id).filter((id) => Number.isInteger(id) && id > 0);
